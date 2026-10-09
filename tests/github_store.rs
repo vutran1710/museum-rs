@@ -14,14 +14,13 @@ use common::github::Release;
 use common::github::fake_github;
 use common::github::writes;
 use futures_util::TryStreamExt;
-use museum::Object;
+use museum::Artifact;
 use museum::Store;
 use museum::StoreError;
 use museum::StoreWriter;
 use museum::Version;
-use museum::github::GithubApi;
+use museum::github::Github;
 use museum::github::GithubError;
-use museum::github::GithubPublic;
 use museum::github::reqwest;
 use rstest::rstest;
 use tokio::io::AsyncReadExt;
@@ -67,9 +66,9 @@ async fn cut_short_server() -> String {
 async fn read_all<S: Store<Error = GithubError>>(
     store: &S,
     session: &S::Session,
-    object: Object<'_>,
+    artifact: Artifact<'_>,
 ) -> Result<Vec<u8>, GithubError> {
-    let stream = store.open(session, object).await?;
+    let stream = store.open(session, artifact).await?;
     stream
         .try_fold(Vec::new(), |mut all, chunk| async move {
             all.extend_from_slice(&chunk);
@@ -78,8 +77,8 @@ async fn read_all<S: Store<Error = GithubError>>(
         .await
 }
 
-fn artifact(version: &Version) -> Object<'_> {
-    Object::Artifact {
+fn artifact(version: &Version) -> Artifact<'_> {
+    Artifact {
         package: "modbus",
         version,
         target: LINUX,
@@ -92,7 +91,7 @@ fn artifact(version: &Version) -> Object<'_> {
 #[case::unreachable(Server::Down, Err("Unreachable"), false)]
 #[case::body_cut_short_is_an_error(Server::CutShort, Err("Unreachable"), false)]
 #[tokio::test]
-async fn github_public_store_serves_objects(
+async fn public_releases_serve_artifacts(
     #[case] server: Server,
     #[case] expected: Result<Vec<u8>, &str>,
     #[case] not_found: bool,
@@ -112,11 +111,15 @@ async fn github_public_store_serves_objects(
         Server::Down => "http://127.0.0.1:9".to_owned(),
         Server::CutShort => cut_short_server().await,
     };
-    let store = GithubPublic::new(client(), &base, "acme", "plugins").prefix("acme-");
+    let store = Github::public("acme", "plugins")
+        .client(client())
+        .enterprise(&base, &base, &base)
+        .prefix("acme-")
+        .releases();
 
-    store.bootstrap().await.unwrap();
+    let session = store.bootstrap().await.unwrap();
 
-    let served = read_all(&store, &(), artifact(&Version::new(0, 4, 2))).await;
+    let served = read_all(&store, &session, artifact(&Version::new(0, 4, 2))).await;
 
     common::assert_outcome(&served, &expected);
     assert_eq!(
@@ -127,7 +130,7 @@ async fn github_public_store_serves_objects(
 
 #[derive(Clone, Copy)]
 enum Wanted {
-    Index,
+    OnFirstPage,
     Artifact,
     Unpublished,
 }
@@ -137,7 +140,7 @@ async fn private_api(status: u16) -> MockServer {
     let uri = server.uri();
     let token = || header("authorization", "Bearer t0ken");
     let page = |releases: serde_json::Value| ResponseTemplate::new(status).set_body_json(releases);
-    let first = page(serde_json::json!([{ "tag_name": "index", "upload_url": "", "assets": [{ "name": "index.json", "url": format!("{uri}/assets/1") }] }]))
+    let first = page(serde_json::json!([{ "tag_name": "modbus-v0.4.1", "upload_url": "", "assets": [{ "name": "acme-modbus-0.4.1-x86_64-unknown-linux-gnu", "url": format!("{uri}/assets/1") }] }]))
         .insert_header("link", format!("<{uri}/page/2>; rel=\"next\", <{uri}/page/2>; rel=\"last\"").as_str());
     let second = page(
         serde_json::json!([{ "tag_name": "modbus-v0.4.2", "upload_url": "", "assets": [{ "name": "acme-modbus-0.4.2-x86_64-unknown-linux-gnu", "url": format!("{uri}/assets/2") }] }]),
@@ -152,7 +155,7 @@ async fn private_api(status: u16) -> MockServer {
         .respond_with(second)
         .mount(&server)
         .await;
-    for (asset, body) in [("/assets/1", "{}"), ("/assets/2", "binary")] {
+    for (asset, body) in [("/assets/1", "first"), ("/assets/2", "binary")] {
         let octets = header("accept", "application/octet-stream");
         Mock::given(path(asset))
             .and(token())
@@ -165,20 +168,20 @@ async fn private_api(status: u16) -> MockServer {
 }
 
 #[rstest]
-#[case::assets_resolved_through_api("REGISTRY_TEST_TOKEN", 200, Wanted::Index, Ok(b"{}".to_vec()), false)]
+#[case::assets_resolved_through_api("REGISTRY_TEST_TOKEN", 200, Wanted::OnFirstPage, Ok(b"first".to_vec()), false)]
 #[case::releases_listed_across_pages("REGISTRY_TEST_TOKEN", 200, Wanted::Artifact, Ok(b"binary".to_vec()), false)]
 #[case::token_sent_on_every_request("REGISTRY_TEST_TOKEN", 200, Wanted::Artifact, Ok(b"binary".to_vec()), false)]
 #[case::missing_token_env_refused(
     "REGISTRY_TEST_NO_SUCH_TOKEN",
     200,
-    Wanted::Index,
+    Wanted::OnFirstPage,
     Err("MissingToken"),
     false
 )]
 #[case::refused_401_is_unauthorized(
     "REGISTRY_TEST_TOKEN",
     401,
-    Wanted::Index,
+    Wanted::OnFirstPage,
     Err("Refused { status: 401"),
     true
 )]
@@ -190,7 +193,7 @@ async fn private_api(status: u16) -> MockServer {
     false
 )]
 #[tokio::test]
-async fn github_api_store_serves_objects(
+async fn private_releases_serve_artifacts(
     #[case] token_env: &str,
     #[case] status: u16,
     #[case] wanted: Wanted,
@@ -198,13 +201,19 @@ async fn github_api_store_serves_objects(
     #[case] unauthorized: bool,
 ) {
     let server = private_api(status).await;
-    let store =
-        GithubApi::new(client(), &server.uri(), "acme", "plugins", token_env).prefix("acme-");
-    let (published, unpublished) = (Version::new(0, 4, 2), Version::new(0, 4, 3));
+    let uri = server.uri();
+    let store = Github::private("acme", "plugins", token_env)
+        .client(client())
+        .enterprise(&uri, &uri, &uri)
+        .prefix("acme-")
+        .releases();
+    let (first, published, unpublished) = (
+        Version::new(0, 4, 1),
+        Version::new(0, 4, 2),
+        Version::new(0, 4, 3),
+    );
     let object = match wanted {
-        Wanted::Index => Object::Index {
-            file_name: "index.json",
-        },
+        Wanted::OnFirstPage => artifact(&first),
         Wanted::Artifact => artifact(&published),
         Wanted::Unpublished => artifact(&unpublished),
     };
@@ -241,28 +250,34 @@ const RELEASE_WITH_ASSET: &[Release<'_>] = &[(
 )];
 
 #[rstest]
-#[case::asset_uploaded_to_existing_release(RELEASE_WITHOUT_ASSETS, Answer::Normal, Ok(()), &[UPLOAD])]
-#[case::release_created_when_missing(&[], Answer::Normal, Ok(()), &[CREATE, UPLOAD])]
-#[case::existing_asset_replaced(RELEASE_WITH_ASSET, Answer::Normal, Ok(()), &[DELETE, UPLOAD])]
-#[case::refused_403_is_unauthorized(RELEASE_WITHOUT_ASSETS, Answer::UploadRefused(403), Err("Refused { status: 403"), &[UPLOAD])]
-#[case::malformed_listing_is_an_error(RELEASE_WITHOUT_ASSETS, Answer::MalformedListing, Err("Unreachable"), &[])]
-#[case::malformed_created_release_is_an_error(&[], Answer::MalformedRelease, Err("Unreachable"), &[CREATE])]
-#[case::malformed_upload_answer_is_an_error(RELEASE_WITHOUT_ASSETS, Answer::MalformedUpload, Err("Unreachable"), &[UPLOAD])]
+#[case::asset_uploaded_to_existing_release(RELEASE_WITHOUT_ASSETS, Answer::Normal, false, Ok(()), &[UPLOAD])]
+#[case::release_created_when_missing(&[], Answer::Normal, false, Ok(()), &[CREATE, UPLOAD])]
+#[case::existing_asset_replaced(RELEASE_WITH_ASSET, Answer::Normal, false, Ok(()), &[DELETE, UPLOAD])]
+#[case::refused_403_is_unauthorized(RELEASE_WITHOUT_ASSETS, Answer::UploadRefused(403), false, Err("Refused { status: 403"), &[UPLOAD])]
+#[case::malformed_listing_is_an_error(RELEASE_WITHOUT_ASSETS, Answer::MalformedListing, false, Err("Unreachable"), &[])]
+#[case::malformed_created_release_is_an_error(&[], Answer::MalformedRelease, false, Err("Unreachable"), &[CREATE])]
+#[case::anonymous_upload_is_read_only(RELEASE_WITHOUT_ASSETS, Answer::Normal, true, Err("ReadOnly"), &[])]
+#[case::malformed_upload_answer_is_an_error(RELEASE_WITHOUT_ASSETS, Answer::MalformedUpload, false, Err("Unreachable"), &[UPLOAD])]
 #[tokio::test]
-async fn github_api_store_uploads(
+async fn releases_upload(
     #[case] existing: &[Release<'_>],
     #[case] given: Answer,
+    #[case] anonymous: bool,
     #[case] expected: Result<(), &str>,
     #[case] requests: &[&str],
 ) {
     let server = fake_github(existing, given).await;
-    let store = GithubApi::new(
-        client(),
-        &server.uri(),
-        "acme",
-        "plugins",
-        "REGISTRY_TEST_TOKEN",
-    );
+    let uri = server.uri();
+    let private = Github::private("acme", "plugins", "REGISTRY_TEST_TOKEN");
+    let github = if anonymous {
+        Github::public("acme", "plugins")
+    } else {
+        private
+    };
+    let store = github
+        .client(client())
+        .enterprise(&uri, &uri, &uri)
+        .releases();
     let location = store.location(artifact(&Version::new(0, 4, 2)));
 
     let uploaded = match store.bootstrap().await {

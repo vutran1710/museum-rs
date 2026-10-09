@@ -39,6 +39,8 @@ tempfile = "3"
 tokio = { version = "1", features = ["full"] }
 # fake GitHub API payloads
 serde_json = "1"
+# decoding files committed through the fake contents API
+base64 = "0.22"
 
 [lints]
 workspace = true

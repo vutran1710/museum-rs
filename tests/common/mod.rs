@@ -1,5 +1,6 @@
-//! Test doubles shared by the core tests: an in-memory `Store` that counts calls and fails on
-//! demand, an in-memory `ReleaseIndex`, the release fixture and minisign keys.
+//! Test doubles shared by the core tests: an in-memory `Store` for executables that counts calls
+//! and fails on demand, an in-memory `ReleaseIndex` whose place counts reads, the release fixture
+//! and minisign keys.
 
 #![allow(dead_code)]
 
@@ -17,15 +18,18 @@ use std::sync::atomic::Ordering;
 
 use bytes::Bytes;
 use futures_util::stream;
+use museum::Artifact;
 use museum::ByteStream;
 use museum::Digest;
+use museum::IndexError;
+use museum::IndexStore;
 use museum::Location;
-use museum::Museum;
-use museum::Object;
 use museum::Options;
 use museum::PublicKey;
+use museum::Registry;
 use museum::Release;
 use museum::ReleaseIndex;
+use museum::Signed;
 use museum::Store;
 use museum::StoreError;
 use museum::StoreWriter;
@@ -84,13 +88,8 @@ impl Log {
             .map(|(session, _)| *session)
             .collect()
     }
-    pub fn opens_of(&self, group_prefix: &str) -> usize {
-        self.opened
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(_, at)| at.starts_with(group_prefix))
-            .count()
+    pub fn opens(&self) -> usize {
+        self.opened.lock().unwrap().len()
     }
 }
 
@@ -103,14 +102,14 @@ pub struct MemStore {
 }
 
 impl MemStore {
-    pub fn put(&self, object: Object<'_>, bytes: Vec<u8>) {
+    pub fn put(&self, artifact: Artifact<'_>, bytes: Vec<u8>) {
         self.objects
             .lock()
             .unwrap()
-            .insert(self.location(object).to_string(), bytes);
+            .insert(self.location(artifact).to_string(), bytes);
     }
     pub fn with_faults(self, faults: &[Fault]) -> Self {
-        *self.faults.lock().unwrap() = faults.iter().cloned().collect();
+        *self.faults.lock().unwrap() = faults.iter().copied().collect();
         self
     }
 }
@@ -131,9 +130,9 @@ impl Store for MemStore {
     async fn open(
         &self,
         session: &usize,
-        object: Object<'_>,
+        artifact: Artifact<'_>,
     ) -> Result<ByteStream<MemError>, MemError> {
-        let location = self.location(object);
+        let location = self.location(artifact);
         self.log
             .opened
             .lock()
@@ -158,20 +157,16 @@ impl Store for MemStore {
         }
     }
 
-    fn location(&self, object: Object<'_>) -> Location {
-        let (group, file) = match object {
-            Object::Index { file_name } => ("index".to_owned(), file_name.to_owned()),
-            Object::Signature { file_name } => ("index".to_owned(), format!("{file_name}.minisig")),
-            Object::Artifact {
-                package,
-                version,
-                target,
-            } => (
-                format!("{package}-v{version}"),
-                format!("{package}-{version}-{target}"),
-            ),
-        };
-        Location { group, file }
+    fn location(&self, artifact: Artifact<'_>) -> Location {
+        let Artifact {
+            package,
+            version,
+            target,
+        } = artifact;
+        Location {
+            group: format!("{package}-v{version}"),
+            file: format!("{package}-{version}-{target}"),
+        }
     }
 }
 
@@ -185,55 +180,120 @@ impl StoreWriter for MemStore {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct MemIndex(pub BTreeMap<String, BTreeMap<Version, Release>>);
+/// Where a `MemIndex` lives: shared by every clone, counting reads, failing on demand.
+#[derive(Default)]
+pub struct MemPlace {
+    pub signed: Mutex<Option<Signed>>,
+    pub reads: AtomicUsize,
+    pub broken: Mutex<bool>,
+}
+
+impl MemPlace {
+    pub fn reads(&self) -> usize {
+        self.reads.load(Ordering::SeqCst)
+    }
+}
+
+impl std::fmt::Debug for MemPlace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MemPlace")
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct MemIndexStore(pub Arc<MemPlace>);
+
+#[derive(Debug, thiserror::Error)]
+pub enum MemStoreError {
+    #[error("no index")]
+    NotFound,
+    #[error("broken")]
+    Broken,
+}
+
+impl IndexError for MemStoreError {
+    fn not_found(&self) -> bool {
+        matches!(self, MemStoreError::NotFound)
+    }
+}
+
+impl IndexStore for MemIndexStore {
+    type Error = MemStoreError;
+
+    async fn read(&self) -> Result<Signed, MemStoreError> {
+        self.0.reads.fetch_add(1, Ordering::SeqCst);
+        if *self.0.broken.lock().unwrap() {
+            return Err(MemStoreError::Broken);
+        }
+        self.0
+            .signed
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or(MemStoreError::NotFound)
+    }
+    async fn write(&self, signed: Signed) -> Result<Vec<String>, MemStoreError> {
+        *self.0.signed.lock().unwrap() = Some(signed);
+        Ok(vec!["mem:index".to_owned()])
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct MemIndex {
+    pub releases: BTreeMap<String, BTreeMap<Version, Release>>,
+    pub store: MemIndexStore,
+}
+
+impl MemIndex {
+    pub fn place(&self) -> &MemPlace {
+        &self.store.0
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 #[error("unreadable index line {0:?}")]
-pub struct MemIndexError(pub String);
+pub struct Unreadable(pub String);
 
 impl ReleaseIndex for MemIndex {
-    type Error = MemIndexError;
+    type Store = MemIndexStore;
+    type Error = Unreadable;
 
-    fn file_name(&self) -> &str {
-        "index.mem"
+    fn store(&self) -> &MemIndexStore {
+        &self.store
     }
-    fn decode(&self, bytes: &[u8]) -> Result<Self, MemIndexError> {
-        let mut index = MemIndex::default();
+    fn decode(&self, bytes: &[u8]) -> Result<Self, Unreadable> {
+        let mut index = MemIndex {
+            releases: BTreeMap::new(),
+            store: self.store.clone(),
+        };
         for line in String::from_utf8_lossy(bytes).lines() {
+            let unreadable = || Unreadable(line.to_owned());
             let fields: Vec<&str> = line.split(' ').collect();
             let [package, version, interface, target, sha256, size] = fields[..] else {
-                return Err(MemIndexError(line.to_owned()));
+                return Err(unreadable());
             };
-            let bad = |_| MemIndexError(line.to_owned());
-            let version: Version = version
-                .parse()
-                .map_err(|_| MemIndexError(line.to_owned()))?;
-            let interface: u32 = interface.parse().map_err(bad)?;
+            let version: Version = version.parse().map_err(|_| unreadable())?;
+            let interface: u32 = interface.parse().map_err(|_| unreadable())?;
             let digest = Digest {
                 sha256: sha256.to_owned(),
-                size_bytes: size.parse().map_err(bad)?,
+                size_bytes: size.parse().map_err(|_| unreadable())?,
             };
-            let release = index
-                .0
-                .entry(package.to_owned())
-                .or_default()
-                .entry(version)
-                .or_insert(Release {
-                    interface,
-                    targets: BTreeMap::new(),
-                });
+            let versions = index.releases.entry(package.to_owned()).or_default();
+            let release = versions.entry(version).or_insert(Release {
+                interface,
+                targets: BTreeMap::new(),
+            });
             release.targets.insert(target.to_owned(), digest);
         }
         Ok(index)
     }
-    fn encode(&self) -> Result<Vec<u8>, MemIndexError> {
+    fn encode(&self) -> Result<Vec<u8>, Unreadable> {
         let mut lines = String::new();
-        for (package, versions) in &self.0 {
+        for (package, versions) in &self.releases {
             for (version, release) in versions {
                 for (target, digest) in &release.targets {
-                    let interface = release.interface;
-                    let (sha256, size) = (&digest.sha256, digest.size_bytes);
+                    let (interface, sha256, size) =
+                        (release.interface, &digest.sha256, digest.size_bytes);
                     lines.push_str(&format!(
                         "{package} {version} {interface} {target} {sha256} {size}\n"
                     ));
@@ -243,10 +303,10 @@ impl ReleaseIndex for MemIndex {
         Ok(lines.into_bytes())
     }
     fn packages(&self) -> Vec<String> {
-        self.0.keys().cloned().collect()
+        self.releases.keys().cloned().collect()
     }
     fn releases(&self, package: &str) -> Vec<(Version, Release)> {
-        self.0
+        self.releases
             .get(package)
             .into_iter()
             .flatten()
@@ -254,7 +314,7 @@ impl ReleaseIndex for MemIndex {
             .collect()
     }
     fn insert(&mut self, package: &str, version: Version, release: Release) {
-        self.0
+        self.releases
             .entry(package.to_owned())
             .or_default()
             .insert(version, release);
@@ -315,46 +375,43 @@ pub fn sign(keys: &minisign::KeyPair, bytes: &[u8]) -> Vec<u8> {
         .into_bytes()
 }
 
-pub fn seeded(index: &MemIndex, signer: &minisign::KeyPair) -> MemStore {
+/// A store holding every artifact of `index`, and an empty index whose place holds `index` signed.
+pub fn seeded(index: &MemIndex, signer: &minisign::KeyPair) -> (MemStore, MemIndex) {
     let store = MemStore::default();
-    let bytes = index.encode().unwrap();
-    store.put(
-        Object::Signature {
-            file_name: "index.mem",
-        },
-        sign(signer, &bytes),
-    );
-    store.put(
-        Object::Index {
-            file_name: "index.mem",
-        },
-        bytes,
-    );
     for package in index.packages() {
         for (version, release) in index.releases(&package) {
             for target in release.targets.keys() {
-                let object = Object::Artifact {
-                    package: &package,
-                    version: &version,
-                    target,
-                };
-                store.put(object, artifact(&package, &version.to_string(), target));
+                store.put(
+                    Artifact {
+                        package: &package,
+                        version: &version,
+                        target,
+                    },
+                    artifact(&package, &version.to_string(), target),
+                );
             }
         }
     }
-    store
+    let empty = MemIndex::default();
+    let bytes = index.encode().unwrap();
+    *empty.place().signed.lock().unwrap() = Some(Signed {
+        signature: Some(sign(signer, &bytes)),
+        index: bytes,
+    });
+    (store, empty)
 }
 
 pub fn registry(
     store: MemStore,
+    index: MemIndex,
     keys: &[&minisign::KeyPair],
     dir: &Path,
-) -> Museum<MemStore, MemIndex> {
+) -> Registry<MemStore, MemIndex> {
     let options = Options {
         trusted_keys: keys.iter().map(|k| trusted(k)).collect(),
         download_dir: dir.to_path_buf(),
     };
-    Museum::new(store, MemIndex::default(), options).unwrap()
+    Registry::new(store, index, options).unwrap()
 }
 
 pub fn assert_outcome<T: PartialEq + std::fmt::Debug, E: std::fmt::Debug>(

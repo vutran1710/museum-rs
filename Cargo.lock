@@ -846,6 +846,7 @@ dependencies = [
 name = "museum"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bytes",
  "futures-util",
  "minisign",
@@ -868,6 +869,7 @@ dependencies = [
 name = "museum-cli"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "clap",
  "minisign",
  "museum",

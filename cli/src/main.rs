@@ -1,5 +1,7 @@
 //! `museum`: start a registry in a GitHub repository (`init`) and publish signed releases into it
-//! (`publish`), driven by a `museum.toml` that `init` writes. The registry logic lives in `museum`.
+//! (`publish`), driven by a `museum.toml` that `init` writes. The index lives in the `index`
+//! release or, with `index_branch`, is committed to the repository. The registry logic lives in
+//! `museum`.
 
 use std::error::Error;
 use std::io::Write;
@@ -11,17 +13,20 @@ use std::time::Duration;
 use clap::Args;
 use clap::Parser;
 use clap::Subcommand;
-use museum::JsonIndex;
-use museum::Museum;
+use museum::IndexStore;
+use museum::Json;
 use museum::NewRelease;
 use museum::Options;
 use museum::PublicKey;
+use museum::Registry;
 use museum::ReleaseIndex;
-use museum::TomlIndex;
+use museum::Toml;
 use museum::Version;
-use museum::YamlIndex;
+use museum::Yaml;
+use museum::github::GITHUB;
 use museum::github::GITHUB_API;
-use museum::github::GithubApi;
+use museum::github::GITHUB_RAW;
+use museum::github::Github;
 use museum::github::GithubConfig;
 use museum::github::reqwest;
 
@@ -59,6 +64,9 @@ struct InitArgs {
     api_url: String,
     #[arg(long, default_value = "GITHUB_TOKEN")]
     token_env: String,
+    /// Commit the index on this branch instead of keeping it in the `index` release.
+    #[arg(long)]
+    index_branch: Option<String>,
 }
 
 #[derive(Args)]
@@ -82,6 +90,7 @@ struct Config {
     secret_key: PathBuf,
     api_url: String,
     token_env: String,
+    index_branch: Option<String>,
 }
 
 fn target_file(written: &str) -> Result<(String, PathBuf), String> {
@@ -110,6 +119,7 @@ async fn museum_cli(cli: Cli) -> Result<(), Box<dyn Error>> {
             secret_key: args.secret_key.clone(),
             api_url: args.api_url.clone(),
             token_env: args.token_env.clone(),
+            index_branch: args.index_branch.clone(),
         },
         Command::Publish(_) => {
             let written = std::fs::read_to_string(&cli.config)
@@ -117,14 +127,35 @@ async fn museum_cli(cli: Cli) -> Result<(), Box<dyn Error>> {
             toml::from_str(&written)?
         }
     };
+    let (GithubConfig::Public { owner, repo } | GithubConfig::Private { owner, repo, .. }) =
+        &config.registry;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(300))
+        .build()?;
+    let gh = Github::private(owner, repo, &config.token_env)
+        .prefix(&config.prefix)
+        .client(client);
+    let gh = gh.enterprise(GITHUB, &config.api_url, GITHUB_RAW);
+    match config.index_branch.clone() {
+        None => with_format(&gh, gh.release_file("index", &config.index), config, &cli).await,
+        Some(branch) => with_format(&gh, gh.file(&branch, &config.index), config, &cli).await,
+    }
+}
+
+async fn with_format<I: IndexStore>(
+    gh: &Github,
+    store: I,
+    config: Config,
+    cli: &Cli,
+) -> Result<(), Box<dyn Error>> {
     match config
         .index
         .rsplit_once('.')
         .map(|(_, extension)| extension)
     {
-        Some("json") => run(JsonIndex::named(&config.index), config, &cli).await,
-        Some("yaml" | "yml") => run(YamlIndex::named(&config.index), config, &cli).await,
-        Some("toml") => run(TomlIndex::named(&config.index), config, &cli).await,
+        Some("json") => run(gh, Json::new(store), config, cli).await,
+        Some("yaml" | "yml") => run(gh, Yaml::new(store), config, cli).await,
+        Some("toml") => run(gh, Toml::new(store), config, cli).await,
         _ => Err(format!(
             "index must end in .json, .yaml or .toml, not '{}'",
             config.index
@@ -134,16 +165,11 @@ async fn museum_cli(cli: Cli) -> Result<(), Box<dyn Error>> {
 }
 
 async fn run<X: ReleaseIndex>(
+    gh: &Github,
     index: X,
     mut config: Config,
     cli: &Cli,
 ) -> Result<(), Box<dyn Error>> {
-    let (GithubConfig::Public { owner, repo } | GithubConfig::Private { owner, repo, .. }) =
-        &config.registry;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(300))
-        .build()?;
-    let store = GithubApi::new(client, &config.api_url, owner, repo, &config.token_env);
     let trusted_keys = config
         .public_keys
         .iter()
@@ -153,7 +179,7 @@ async fn run<X: ReleaseIndex>(
         trusted_keys,
         download_dir: PathBuf::from("."),
     };
-    let museum = Museum::new(store.prefix(&config.prefix), index, options)?;
+    let registry = Registry::github(gh, index, options)?;
     let password = std::env::var(PASSWORD_ENV).ok();
     match &cli.command {
         Command::Init(_) => {
@@ -164,7 +190,7 @@ async fn run<X: ReleaseIndex>(
             let mut key_file = create_new(&config.secret_key, 0o600)?;
             let initialised: Result<_, Box<dyn Error>> = async {
                 let config_file = create_new(&cli.config, 0o644)?;
-                let uploads = museum.init(&signing_key).await.inspect_err(|_| {
+                let uploads = registry.init(&signing_key).await.inspect_err(|_| {
                     let _ = std::fs::remove_file(&cli.config);
                 })?;
                 Ok((uploads, config_file))
@@ -193,7 +219,7 @@ async fn run<X: ReleaseIndex>(
                 interface: args.interface,
                 files: &args.files,
             };
-            let published = museum.publish(release, &secret_key).await?;
+            let published = registry.publish(release, &secret_key).await?;
             published
                 .uploads
                 .iter()

@@ -4,8 +4,8 @@
 
 mod error;
 mod index;
-mod museum;
 mod publish;
+mod registry;
 mod resolve;
 mod store;
 
@@ -13,33 +13,37 @@ mod store;
 pub mod github;
 
 pub use error::Error;
-pub use error::MuseumError;
+pub use error::RegistryError;
 pub use index::Digest;
+pub use index::IndexError;
 pub use index::Release;
 pub use index::ReleaseIndex;
+pub use index::Signed;
 #[cfg(feature = "json")]
-pub use index::builtin::JsonIndex;
+pub use index::builtin::Json;
 #[cfg(feature = "toml")]
-pub use index::builtin::TomlIndex;
+pub use index::builtin::Toml;
 #[cfg(feature = "toml")]
-pub use index::builtin::TomlIndexError;
+pub use index::builtin::TomlError;
 #[cfg(feature = "yaml")]
-pub use index::builtin::YamlIndex;
+pub use index::builtin::Yaml;
+pub use index::store::IndexStore;
+pub use index::store::LocalFile;
 pub use minisign::SecretKey;
 pub use minisign_verify::PublicKey;
-pub use museum::Fetched;
-pub use museum::Museum;
-pub use museum::Options;
 pub use publish::NewRelease;
 pub use publish::Published;
+pub use registry::Fetched;
+pub use registry::Options;
+pub use registry::Registry;
 pub use resolve::Build;
 pub use resolve::Unresolvable;
 pub use resolve::resolve;
 pub use semver::Version;
 pub use semver::VersionReq;
+pub use store::Artifact;
 pub use store::ByteStream;
 pub use store::Location;
-pub use store::Object;
 pub use store::Store;
 pub use store::StoreError;
 pub use store::StoreWriter;

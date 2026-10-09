@@ -1,4 +1,4 @@
-//! Fetching through `Museum` against the in-memory store: only verified files are left, the
+//! Fetching through `Registry` against the in-memory store: only verified files are left, the
 //! download directory resolves, and failures keep their types.
 
 #![allow(clippy::unwrap_used)]
@@ -10,7 +10,6 @@ use std::path::PathBuf;
 
 use common::Fault;
 use common::LINUX;
-use common::MemIndex;
 use common::artifact;
 use common::assert_outcome;
 use common::fixture;
@@ -18,9 +17,9 @@ use common::keypair;
 use common::registry;
 use common::seeded;
 use common::sign;
+use museum::Artifact;
 use museum::Build;
-use museum::Object;
-use museum::ReleaseIndex;
+use museum::Signed;
 use museum::VersionReq;
 use museum::resolve;
 use rstest::rstest;
@@ -88,11 +87,12 @@ async fn fetch_leaves_only_verified_files(
         Dir::Missing => temp.path().join("a").join("b"),
     };
     let keys = keypair();
-    let store = seeded(&fixture(), &keys).with_faults(faults);
+    let (store, index) = seeded(&fixture(), &keys);
+    let store = store.with_faults(faults);
     let right = artifact("modbus", "0.4.2", LINUX);
     if !served_right {
         store.put(
-            Object::Artifact {
+            Artifact {
                 package: "modbus",
                 version: &build().version,
                 target: LINUX,
@@ -109,7 +109,7 @@ async fn fetch_leaves_only_verified_files(
     if let Some(bytes) = on_disk {
         std::fs::write(installed(&given), bytes).unwrap();
     }
-    let registry = registry(store, &[&keys], &given);
+    let registry = registry(store, index, &[&keys], &given);
 
     let fetched = registry.fetch(&build()).await;
 
@@ -142,7 +142,8 @@ async fn fetch_leaves_only_verified_files(
 enum Broken {
     Store,
     Bootstrap,
-    Index,
+    IndexRead,
+    IndexDecode,
     DownloadDir,
     Nothing,
 }
@@ -150,7 +151,8 @@ enum Broken {
 #[rstest]
 #[case::store_error_passed_through(Broken::Store, "modbus", "Store(Broken)")]
 #[case::bootstrap_error_passed_through(Broken::Bootstrap, "modbus", "Store(BootstrapFailed)")]
-#[case::index_decode_error_passed_through(Broken::Index, "modbus", "Index(MemIndexError(")]
+#[case::index_read_error_passed_through(Broken::IndexRead, "modbus", "IndexStore(Broken)")]
+#[case::index_decode_error_passed_through(Broken::IndexDecode, "modbus", "Index(Unreadable(")]
 #[case::no_such_build(Broken::Nothing, "nope", "Unresolvable(NoSuchBuild")]
 #[case::download_dir_unwritable(Broken::DownloadDir, "modbus", "Io {")]
 #[tokio::test]
@@ -158,28 +160,22 @@ async fn failures_are_typed(#[case] broken: Broken, #[case] package: &str, #[cas
     let temp = TempDir::new().unwrap();
     let dir = temp.path().join("downloads");
     let keys = keypair();
-    let mut store = seeded(&fixture(), &keys);
+    let (mut store, index) = seeded(&fixture(), &keys);
     match broken {
         Broken::Store => store = store.with_faults(&[Fault::Broken]),
         Broken::Bootstrap => store.bootstrap_fails = true,
-        Broken::Index => {
-            store.put(
-                Object::Index {
-                    file_name: MemIndex::default().file_name(),
-                },
-                b"garbage".to_vec(),
-            );
-            store.put(
-                Object::Signature {
-                    file_name: "index.mem",
-                },
-                sign(&keys, b"garbage"),
-            );
+        Broken::IndexRead => *index.place().broken.lock().unwrap() = true,
+        Broken::IndexDecode => {
+            let garbage = Signed {
+                index: b"garbage".to_vec(),
+                signature: Some(sign(&keys, b"garbage")),
+            };
+            *index.place().signed.lock().unwrap() = Some(garbage);
         }
         Broken::DownloadDir => std::fs::write(&dir, b"a file").unwrap(),
         Broken::Nothing => {}
     }
-    let registry = registry(store, &[&keys], &dir);
+    let registry = registry(store, index, &[&keys], &dir);
 
     let fetched = match registry
         .resolve(package, LINUX, 2, &[VersionReq::STAR])

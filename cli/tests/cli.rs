@@ -41,13 +41,15 @@ const FRESH: &[Release<'_>] = &[];
 const INITIALISED: &[Release<'_>] = &[("index", &[("index.json", b"{}")])];
 
 #[rstest]
-#[case::fresh_repository_initialised(FRESH, false, Ok(()), &["POST /repos/acme/plugins/releases", "POST /upload/index?name=index.json", "POST /upload/index?name=index.json.minisig"])]
-#[case::initialised_repository_refused(INITIALISED, false, Err("the registry already has an index"), &[])]
-#[case::key_file_exists_refused(FRESH, true, Err("keys/museum.key"), &[])]
+#[case::fresh_repository_initialised(FRESH, false, None, Ok(()), &["POST /repos/acme/plugins/releases", "POST /upload/index?name=index.json", "POST /upload/index?name=index.json.minisig"])]
+#[case::initialised_repository_refused(INITIALISED, false, None, Err("the registry already has an index"), &[])]
+#[case::key_file_exists_refused(FRESH, true, None, Err("keys/museum.key"), &[])]
+#[case::index_in_repo_initialised(FRESH, false, Some("main"), Ok(()), &["PUT /repos/acme/plugins/contents/index.json", "PUT /repos/acme/plugins/contents/index.json.minisig"])]
 #[tokio::test]
 async fn cli_init_writes_config_and_index(
     #[case] existing: &[Release<'_>],
     #[case] key_exists: bool,
+    #[case] index_branch: Option<&str>,
     #[case] expected: Result<(), &str>,
     #[case] requests: &[&str],
 ) {
@@ -61,18 +63,22 @@ async fn cli_init_writes_config_and_index(
         std::fs::write(dir.path().join("keys/museum.key"), b"in use").unwrap();
     }
 
-    let output = museum(
-        dir.path(),
-        &[
-            "init",
-            "--registry",
-            "https://github.com/acme/plugins",
-            "--api-url",
-            &api,
-            "--secret-key",
-            "keys/museum.key",
-        ],
+    let mut args = vec![
+        "init",
+        "--registry",
+        "https://github.com/acme/plugins",
+        "--api-url",
+        &api,
+        "--secret-key",
+        "keys/museum.key",
+    ];
+    args.extend(
+        index_branch
+            .map(|branch| ["--index-branch", branch])
+            .into_iter()
+            .flatten(),
     );
+    let output = museum(dir.path(), &args);
 
     let outcome = refusal(&output);
     assert!(
@@ -123,29 +129,40 @@ async fn cli_init_writes_config_and_index(
     }
 }
 
-fn publish_writes(index: &str) -> Vec<String> {
-    [
+fn publish_writes(index: &str, index_branch: Option<&str>) -> Vec<String> {
+    let artifact = [
         "POST /repos/acme/plugins/releases".to_owned(),
         format!("POST /upload/hello-v0.1.0?name=acme-hello-0.1.0-{LINUX}"),
-        "POST /repos/acme/plugins/releases".to_owned(),
-        format!("POST /upload/index?name={index}"),
-        format!("POST /upload/index?name={index}.minisig"),
-    ]
-    .to_vec()
+    ];
+    let index = match index_branch {
+        None => vec![
+            "POST /repos/acme/plugins/releases".to_owned(),
+            format!("POST /upload/index?name={index}"),
+            format!("POST /upload/index?name={index}.minisig"),
+        ],
+        Some(_) => vec![
+            format!("PUT /repos/acme/plugins/contents/{index}"),
+            format!("PUT /repos/acme/plugins/contents/{index}.minisig"),
+        ],
+    };
+    [artifact.to_vec(), index].concat()
 }
 
 #[rstest]
-#[case::json_registry(Some("index.json"), Ok(()))]
-#[case::yaml_registry(Some("index.yaml"), Ok(()))]
-#[case::toml_registry(Some("index.toml"), Ok(()))]
+#[case::json_registry(Some("index.json"), None, Ok(()))]
+#[case::yaml_registry(Some("index.yaml"), None, Ok(()))]
+#[case::toml_registry(Some("index.toml"), None, Ok(()))]
 #[case::unknown_index_extension_refused(
     Some("index.ini"),
+    None,
     Err("index must end in .json, .yaml or .toml")
 )]
-#[case::missing_config_refused(None, Err("museum.toml"))]
+#[case::missing_config_refused(None, None, Err("museum.toml"))]
+#[case::index_in_repo_published(Some("index.json"), Some("main"), Ok(()))]
 #[tokio::test]
 async fn cli_publishes_from_config(
     #[case] index: Option<&str>,
+    #[case] index_branch: Option<&str>,
     #[case] expected: Result<(), &str>,
 ) {
     let (dir, server) = (
@@ -165,7 +182,10 @@ async fn cli_publishes_from_config(
             keys.pk.to_base64(),
             server.uri()
         );
-        std::fs::write(dir.path().join("museum.toml"), config).unwrap();
+        let branch = index_branch
+            .map(|branch| format!("index_branch = \"{branch}\"\n"))
+            .unwrap_or_default();
+        std::fs::write(dir.path().join("museum.toml"), config + &branch).unwrap();
     }
 
     let output = museum(
@@ -193,7 +213,7 @@ async fn cli_publishes_from_config(
     );
     assert_eq!(outcome.is_ok(), expected.is_ok());
     let expected_writes = if expected.is_ok() {
-        publish_writes(index.unwrap())
+        publish_writes(index.unwrap(), index_branch)
     } else {
         Vec::new()
     };

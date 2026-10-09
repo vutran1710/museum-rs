@@ -1,5 +1,5 @@
-//! Where registry bytes live and how access to them is obtained. Implemented per store type
-//! (GitHub, S3, …); only `Museum` calls it.
+//! Where executables live and how access to them is obtained. Implemented per store type
+//! (GitHub, S3, …); only `Registry` calls it. Where the index lives is the index's own business.
 
 use std::fmt;
 use std::future::Future;
@@ -12,18 +12,10 @@ use semver::Version;
 pub type ByteStream<E> = Pin<Box<dyn Stream<Item = Result<Bytes, E>> + Send>>;
 
 #[derive(Clone, Copy, Debug)]
-pub enum Object<'a> {
-    Index {
-        file_name: &'a str,
-    },
-    Signature {
-        file_name: &'a str,
-    },
-    Artifact {
-        package: &'a str,
-        version: &'a Version,
-        target: &'a str,
-    },
+pub struct Artifact<'a> {
+    pub package: &'a str,
+    pub version: &'a Version,
+    pub target: &'a str,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -51,9 +43,9 @@ pub trait Store: Send + Sync + 'static {
     fn open(
         &self,
         session: &Self::Session,
-        object: Object<'_>,
+        artifact: Artifact<'_>,
     ) -> impl Future<Output = Result<ByteStream<Self::Error>, Self::Error>> + Send;
-    fn location(&self, object: Object<'_>) -> Location;
+    fn location(&self, artifact: Artifact<'_>) -> Location;
 }
 
 /// The write half a store offers for publishing; reading never needs it.

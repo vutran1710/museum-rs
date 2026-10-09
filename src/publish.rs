@@ -1,6 +1,6 @@
-//! The publishing side of `Museum`: start a registry with an empty signed index, and add a release
-//! — verified index first, a published version never changes, executables uploaded before the index
-//! that lists them.
+//! The publishing side of `Registry`: start a registry with an empty signed index, and add a
+//! release. The index is verified first, a published version never changes, and executables are
+//! uploaded before the index that lists them.
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -12,15 +12,18 @@ use sha2::Digest as _;
 use sha2::Sha256;
 
 use crate::error::Error;
-use crate::error::MuseumError;
+use crate::error::RegistryError;
 use crate::error::io;
 use crate::index::Digest;
+use crate::index::IndexError;
 use crate::index::Release;
 use crate::index::ReleaseIndex;
-use crate::museum::Museum;
+use crate::index::Signed;
+use crate::index::store::IndexStore;
+use crate::registry::Registry;
+use crate::store::Artifact;
 use crate::store::Location;
-use crate::store::Object;
-use crate::store::StoreError;
+use crate::store::Store;
 use crate::store::StoreWriter;
 
 pub struct NewRelease<'a> {
@@ -33,30 +36,41 @@ pub struct NewRelease<'a> {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Published {
     pub changed: bool,
-    pub uploads: Vec<Location>,
+    /// What was written: each executable's location, then where the index went.
+    pub uploads: Vec<String>,
 }
 
-impl<S: StoreWriter, X: ReleaseIndex> Museum<S, X> {
-    pub async fn init(&self, secret_key: &SecretKey) -> Result<Vec<Location>, MuseumError<S, X>> {
-        match self
-            .read(Object::Index {
-                file_name: self.empty.file_name(),
-            })
-            .await
-        {
-            Err(Error::Store(e)) if e.not_found() => {
-                self.write_index(&self.empty, secret_key).await
-            }
+impl<S: Store, X: ReleaseIndex> Registry<S, X> {
+    pub async fn init(&self, secret_key: &SecretKey) -> Result<Vec<String>, RegistryError<S, X>> {
+        match self.empty.store().read().await {
+            Err(e) if e.not_found() => self.write_index(&self.empty, secret_key).await,
             Ok(_) => Err(Error::AlreadyInitialised),
-            Err(e) => Err(e),
+            Err(e) => Err(Error::IndexStore(e)),
         }
     }
 
+    async fn write_index(
+        &self,
+        index: &X,
+        secret_key: &SecretKey,
+    ) -> Result<Vec<String>, RegistryError<S, X>> {
+        let bytes = index.encode().map_err(Error::Index)?;
+        let signature = minisign::sign(None, secret_key, Cursor::new(&bytes), None, None)
+            .map_err(Error::Sign)?;
+        let signed = Signed {
+            index: bytes,
+            signature: Some(signature.to_string().into_bytes()),
+        };
+        index.store().write(signed).await.map_err(Error::IndexStore)
+    }
+}
+
+impl<S: StoreWriter, X: ReleaseIndex> Registry<S, X> {
     pub async fn publish(
         &self,
         release: NewRelease<'_>,
         secret_key: &SecretKey,
-    ) -> Result<Published, MuseumError<S, X>> {
+    ) -> Result<Published, RegistryError<S, X>> {
         let NewRelease {
             package,
             version,
@@ -76,7 +90,7 @@ impl<S: StoreWriter, X: ReleaseIndex> Museum<S, X> {
                 },
             );
             built.push((
-                self.store.location(Object::Artifact {
+                self.store.location(Artifact {
                     package,
                     version: &version,
                     target,
@@ -87,7 +101,7 @@ impl<S: StoreWriter, X: ReleaseIndex> Museum<S, X> {
         let new = Release { interface, targets };
 
         let mut index = match self.load(&self.trusted_keys).await {
-            Err(Error::Store(e)) if e.not_found() => self.empty.clone(),
+            Err(Error::IndexStore(e)) if e.not_found() => self.empty.clone(),
             loaded => loaded?,
         };
         match index
@@ -113,7 +127,7 @@ impl<S: StoreWriter, X: ReleaseIndex> Museum<S, X> {
         let mut uploads = Vec::new();
         for (location, bytes) in built {
             self.upload(&location, bytes).await?;
-            uploads.push(location);
+            uploads.push(location.to_string());
         }
         uploads.extend(self.write_index(&index, secret_key).await?);
         Ok(Published {
@@ -122,31 +136,7 @@ impl<S: StoreWriter, X: ReleaseIndex> Museum<S, X> {
         })
     }
 
-    async fn write_index(
-        &self,
-        index: &X,
-        secret_key: &SecretKey,
-    ) -> Result<Vec<Location>, MuseumError<S, X>> {
-        let bytes = index.encode().map_err(Error::Index)?;
-        let signature = minisign::sign(None, secret_key, Cursor::new(&bytes), None, None)
-            .map_err(Error::Sign)?;
-        let file_name = self.empty.file_name();
-        let mut uploads = Vec::new();
-        for (object, contents) in [
-            (Object::Index { file_name }, bytes),
-            (
-                Object::Signature { file_name },
-                signature.to_string().into_bytes(),
-            ),
-        ] {
-            let location = self.store.location(object);
-            self.upload(&location, contents).await?;
-            uploads.push(location);
-        }
-        Ok(uploads)
-    }
-
-    async fn upload(&self, location: &Location, bytes: Vec<u8>) -> Result<(), MuseumError<S, X>> {
+    async fn upload(&self, location: &Location, bytes: Vec<u8>) -> Result<(), RegistryError<S, X>> {
         self.authorised(|session| {
             let bytes = bytes.clone();
             async move { self.store.upload(&session, location, bytes).await }

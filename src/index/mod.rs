@@ -1,12 +1,16 @@
-//! The index file listing every release: the `ReleaseIndex` trait users implement, and the
-//! built-in JSON / YAML / TOML implementations (`builtin`).
+//! The index listing every release. `ReleaseIndex` is the file format users implement; the
+//! `IndexStore` it holds finds and keeps the file (`store`); JSON / YAML / TOML are built in
+//! (`builtin`).
 
 #[cfg(any(feature = "json", feature = "yaml", feature = "toml"))]
 pub(crate) mod builtin;
+pub(crate) mod store;
 
 use std::collections::BTreeMap;
 
 use semver::Version;
+
+use crate::index::store::IndexStore;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(
@@ -28,12 +32,26 @@ pub struct Digest {
     pub size_bytes: u64,
 }
 
-/// The value given to `Museum::new` is the empty index; `decode` yields a loaded one with the
-/// same configuration.
+/// An index file and its detached minisign signature, exactly as stored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Signed {
+    pub index: Vec<u8>,
+    /// `None` when the index exists without a signature; `Registry` refuses it.
+    pub signature: Option<Vec<u8>>,
+}
+
+pub trait IndexError: std::error::Error + Send + Sync + 'static {
+    /// No index exists yet: `init` may create one and the first `publish` starts empty.
+    fn not_found(&self) -> bool;
+}
+
+/// A file format. The value given to `Registry::new` is the empty index; `decode` yields a loaded
+/// one holding the same store.
 pub trait ReleaseIndex: Clone + Send + Sync + 'static {
+    type Store: IndexStore;
     type Error: std::error::Error + Send + Sync + 'static;
 
-    fn file_name(&self) -> &str;
+    fn store(&self) -> &Self::Store;
     fn decode(&self, bytes: &[u8]) -> Result<Self, Self::Error>;
     fn encode(&self) -> Result<Vec<u8>, Self::Error>;
     fn packages(&self) -> Vec<String>;

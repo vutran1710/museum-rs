@@ -97,6 +97,11 @@ pub async fn fake_github(existing: &[Release<'_>], given: Answer) -> MockServer 
         .respond_with(upload)
         .mount(&server)
         .await;
+    Mock::given(method("PUT"))
+        .and(path_regex("^/repos/acme/plugins/contents/"))
+        .respond_with(ResponseTemplate::new(201))
+        .mount(&server)
+        .await;
     Mock::given(method("DELETE"))
         .and(path_regex("^/assets/"))
         .respond_with(ResponseTemplate::new(204))
@@ -130,22 +135,35 @@ pub async fn writes(server: &MockServer) -> Vec<String> {
         .collect()
 }
 
+/// Every file written, by file name: release uploads as sent, contents-API commits decoded.
 pub async fn uploads(server: &MockServer) -> std::collections::HashMap<String, Vec<u8>> {
+    use base64::Engine;
     let requests = server.received_requests().await.unwrap();
-    let uploads = requests
-        .into_iter()
-        .filter(|r| r.url.path().starts_with("/upload/"));
-    uploads
-        .map(|r| {
-            (
-                r.url
-                    .query_pairs()
-                    .find(|(key, _)| key == "name")
-                    .unwrap()
-                    .1
-                    .into_owned(),
-                r.body,
-            )
-        })
-        .collect()
+    let mut written = std::collections::HashMap::new();
+    for request in requests {
+        let name = request
+            .url
+            .query_pairs()
+            .find(|(key, _)| key == "name")
+            .map(|(_, name)| name.into_owned());
+        let file = request
+            .url
+            .path_segments()
+            .unwrap()
+            .next_back()
+            .unwrap()
+            .to_owned();
+        match (request.method.as_str(), name) {
+            ("POST", Some(name)) => drop(written.insert(name, request.body)),
+            ("PUT", _) => {
+                let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                let content = base64::engine::general_purpose::STANDARD
+                    .decode(body["content"].as_str().unwrap())
+                    .unwrap();
+                written.insert(file, content);
+            }
+            _ => {}
+        }
+    }
+    written
 }

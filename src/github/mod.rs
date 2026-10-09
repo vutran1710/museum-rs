@@ -1,29 +1,37 @@
-//! The built-in GitHub stores: releases of one repository, read anonymously (`GithubPublic`) or
-//! with a token through the API (`GithubApi`, which also writes). Shared here: the registry string,
-//! the release layout, and the HTTP error.
+//! GitHub as a registry: `Github` is one repository and how it is reached; it hands out the
+//! executables store (`releases`) and index stores (`files`). `HttpFile` reads an index from any
+//! URL. Shared here: the registry string, the artifact layout, tokens, and the HTTP error.
 
-mod api;
-mod public;
+mod files;
+mod handle;
+mod releases;
 
 use std::fmt;
 use std::str::FromStr;
 
 use futures_util::StreamExt;
+use futures_util::TryStreamExt;
 
-pub use api::ApiSession;
-pub use api::GithubApi;
-pub use public::GithubPublic;
+pub use files::GithubFile;
+pub use files::HttpFile;
+pub use handle::Github;
+pub use releases::GithubReleaseFile;
+pub use releases::GithubReleases;
+pub use releases::ReleasesSession;
 pub use reqwest;
 use reqwest::RequestBuilder;
 use reqwest::Response;
+use reqwest::header::HeaderValue;
 use reqwest::header::USER_AGENT;
 
+use crate::index::IndexError;
+use crate::store::Artifact;
 use crate::store::Location;
-use crate::store::Object;
 use crate::store::StoreError;
 
 pub const GITHUB: &str = "https://github.com";
 pub const GITHUB_API: &str = "https://api.github.com";
+pub const GITHUB_RAW: &str = "https://raw.githubusercontent.com";
 const AGENT: &str = concat!("museum/", env!("CARGO_PKG_VERSION"));
 
 /// A registry written as one string: `https://github.com/<org>/<repo>[?token_env=<VAR>]`.
@@ -125,6 +133,14 @@ pub enum GithubError {
     MissingToken { env_var: String },
     #[error("no release asset {location}")]
     MissingAsset { location: Location },
+    #[error("{place} is read-only")]
+    ReadOnly { place: String },
+}
+
+impl IndexError for GithubError {
+    fn not_found(&self) -> bool {
+        StoreError::not_found(self)
+    }
 }
 
 impl StoreError for GithubError {
@@ -145,27 +161,47 @@ impl StoreError for GithubError {
     }
 }
 
-pub(crate) fn location(prefix: &str, object: Object<'_>) -> Location {
-    let (group, file) = match object {
-        Object::Index { file_name } => ("index".to_owned(), file_name.to_owned()),
-        Object::Signature { file_name } => ("index".to_owned(), format!("{file_name}.minisig")),
-        Object::Artifact {
-            package,
-            version,
-            target,
-        } => {
-            let exe = if target.contains("windows") {
-                ".exe"
-            } else {
-                ""
-            };
-            (
-                format!("{package}-v{version}"),
-                format!("{prefix}{package}-{version}-{target}{exe}"),
-            )
-        }
+pub(crate) fn location(prefix: &str, artifact: Artifact<'_>) -> Location {
+    let Artifact {
+        package,
+        version,
+        target,
+    } = artifact;
+    let exe = if target.contains("windows") {
+        ".exe"
+    } else {
+        ""
     };
-    Location { group, file }
+    Location {
+        group: format!("{package}-v{version}"),
+        file: format!("{prefix}{package}-{version}-{target}{exe}"),
+    }
+}
+
+pub(crate) fn bearer(token_env: &str) -> Result<HeaderValue, GithubError> {
+    let token = std::env::var(token_env).ok();
+    let header = token.and_then(|token| HeaderValue::from_str(&format!("Bearer {token}")).ok());
+    header.ok_or_else(|| GithubError::MissingToken {
+        env_var: token_env.to_owned(),
+    })
+}
+
+pub(crate) async fn bytes(request: RequestBuilder, url: &str) -> Result<Vec<u8>, GithubError> {
+    let chunks = stream(send(request, url).await?, url);
+    chunks
+        .try_fold(Vec::new(), |mut all, chunk| async move {
+            all.extend_from_slice(&chunk);
+            Ok(all)
+        })
+        .await
+}
+
+/// A missing signature is `None`, for `Registry` to refuse; any other failure stays an error.
+pub(crate) fn optional(read: Result<Vec<u8>, GithubError>) -> Result<Option<Vec<u8>>, GithubError> {
+    match read {
+        Err(e) if StoreError::not_found(&e) => Ok(None),
+        read => read.map(Some),
+    }
 }
 
 pub(crate) async fn send(request: RequestBuilder, url: &str) -> Result<Response, GithubError> {

@@ -8,14 +8,12 @@ mod common;
 
 use common::LINUX;
 use common::WIN;
+use museum::Artifact;
 use museum::Location;
-use museum::Object;
 use museum::Store;
 use museum::Version;
-use museum::github::GITHUB;
+use museum::github::Github;
 use museum::github::GithubConfig;
-use museum::github::GithubPublic;
-use museum::github::reqwest;
 use rstest::rstest;
 
 fn public(owner: &str, repo: &str) -> Result<GithubConfig, String> {
@@ -54,57 +52,34 @@ fn registry_string_parses_alike_from_config_file_and_flag(
     }
 }
 
-#[derive(Clone, Copy)]
-enum Kind {
-    Index,
-    Signature,
-    Artifact(&'static str),
-}
-
 #[rstest]
-#[case::index(Kind::Index, "", "index", "index.json")]
-#[case::signature(Kind::Signature, "", "index", "index.json.minisig")]
-#[case::artifact_linux(
-    Kind::Artifact(LINUX),
-    "",
-    "modbus-v0.4.2",
-    "modbus-0.4.2-x86_64-unknown-linux-gnu"
-)]
+#[case::artifact_linux(LINUX, "", "modbus-v0.4.2", "modbus-0.4.2-x86_64-unknown-linux-gnu")]
 #[case::windows_target_gets_exe(
-    Kind::Artifact(WIN),
+    WIN,
     "",
     "modbus-v0.4.2",
     "modbus-0.4.2-x86_64-pc-windows-msvc.exe"
 )]
 #[case::prefix_applied(
-    Kind::Artifact(LINUX),
+    LINUX,
     "acme-",
     "modbus-v0.4.2",
     "acme-modbus-0.4.2-x86_64-unknown-linux-gnu"
 )]
 fn github_location_follows_layout(
-    #[case] kind: Kind,
+    #[case] target: &str,
     #[case] prefix: &str,
     #[case] group: &str,
     #[case] file: &str,
 ) {
-    let store = GithubPublic::new(reqwest::Client::new(), GITHUB, "acme", "plugins").prefix(prefix);
-    let version = Version::new(0, 4, 2);
-    let object = match kind {
-        Kind::Index => Object::Index {
-            file_name: "index.json",
-        },
-        Kind::Signature => Object::Signature {
-            file_name: "index.json",
-        },
-        Kind::Artifact(target) => Object::Artifact {
-            package: "modbus",
-            version: &version,
-            target,
-        },
+    let store = Github::public("acme", "plugins").prefix(prefix).releases();
+    let artifact = Artifact {
+        package: "modbus",
+        version: &Version::new(0, 4, 2),
+        target,
     };
     assert_eq!(
-        store.location(object),
+        store.location(artifact),
         Location {
             group: group.into(),
             file: file.into()

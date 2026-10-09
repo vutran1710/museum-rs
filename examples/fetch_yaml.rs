@@ -5,13 +5,12 @@ use std::error::Error;
 use std::time::Duration;
 
 use museum::HOST_TARGET;
-use museum::Museum;
 use museum::Options;
 use museum::PublicKey;
+use museum::Registry;
 use museum::VersionReq;
-use museum::YamlIndex;
-use museum::github::GITHUB;
-use museum::github::GithubPublic;
+use museum::Yaml;
+use museum::github::Github;
 use museum::github::reqwest;
 
 #[tokio::main]
@@ -27,15 +26,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()?;
-    let store = GithubPublic::new(client, GITHUB, "vutran1710", "museum-rs").prefix(prefix);
+    let gh = Github::public("vutran1710", "museum-rs")
+        .prefix(prefix)
+        .client(client);
+    let index = Yaml::new(gh.release_file("index", "index.yaml"));
     let options = Options {
         trusted_keys: vec![PublicKey::from_base64(key)?],
         download_dir: "target/museum/yaml".into(),
     };
-    let museum = Museum::new(store, YamlIndex::default(), options)?;
+    let registry = Registry::github(&gh, index, options)?;
 
     let wanted = [("hello".to_owned(), VersionReq::STAR)];
-    for (package, fetched) in museum.fetch_all(&wanted, HOST_TARGET, 1).await {
+    for (package, fetched) in registry.fetch_all(&wanted, HOST_TARGET, 1).await {
         let fetched = fetched?;
         println!(
             "{package}: {} ({} bytes, from cache: {})",

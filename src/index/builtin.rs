@@ -1,5 +1,5 @@
 //! JSON, YAML and TOML indexes: one serde model, `package → version → release`, written by three
-//! serde crates.
+//! serde crates. Each holds the `IndexStore` its file lives in.
 
 use std::collections::BTreeMap;
 
@@ -7,41 +7,37 @@ use semver::Version;
 
 use crate::index::Release;
 use crate::index::ReleaseIndex;
+use crate::index::store::IndexStore;
 
 type Model = BTreeMap<String, BTreeMap<Version, Release>>;
 
 macro_rules! builtin_index {
-    ($name:ident, $default_file:literal, $error:ty, $decode:expr, $encode:expr) => {
-        #[derive(Clone, Debug, PartialEq)]
-        pub struct $name {
-            file_name: String,
+    ($name:ident, $error:ty, $decode:expr, $encode:expr) => {
+        #[derive(Clone, Debug)]
+        pub struct $name<S> {
+            store: S,
             releases: Model,
         }
 
-        impl $name {
-            pub fn named(file_name: &str) -> Self {
+        impl<S: IndexStore> $name<S> {
+            pub fn new(store: S) -> Self {
                 Self {
-                    file_name: file_name.to_owned(),
+                    store,
                     releases: Model::new(),
                 }
             }
         }
 
-        impl Default for $name {
-            fn default() -> Self {
-                Self::named($default_file)
-            }
-        }
-
-        impl ReleaseIndex for $name {
+        impl<S: IndexStore> ReleaseIndex for $name<S> {
+            type Store = S;
             type Error = $error;
 
-            fn file_name(&self) -> &str {
-                &self.file_name
+            fn store(&self) -> &S {
+                &self.store
             }
             fn decode(&self, bytes: &[u8]) -> Result<Self, Self::Error> {
                 Ok(Self {
-                    file_name: self.file_name.clone(),
+                    store: self.store.clone(),
                     releases: $decode(bytes)?,
                 })
             }
@@ -71,8 +67,7 @@ macro_rules! builtin_index {
 
 #[cfg(feature = "json")]
 builtin_index!(
-    JsonIndex,
-    "index.json",
+    Json,
     serde_json::Error,
     serde_json::from_slice::<Model>,
     serde_json::to_vec_pretty
@@ -80,16 +75,15 @@ builtin_index!(
 
 #[cfg(feature = "yaml")]
 builtin_index!(
-    YamlIndex,
-    "index.yaml",
+    Yaml,
     serde_yaml_ng::Error,
     serde_yaml_ng::from_slice::<Model>,
-    |m: &Model| serde_yaml_ng::to_string(m).map(String::into_bytes)
+    |m: &Model| { serde_yaml_ng::to_string(m).map(String::into_bytes) }
 );
 
 #[cfg(feature = "toml")]
 #[derive(Debug, thiserror::Error)]
-pub enum TomlIndexError {
+pub enum TomlError {
     #[error(transparent)]
     Decode(#[from] toml::de::Error),
     #[error(transparent)]
@@ -98,11 +92,10 @@ pub enum TomlIndexError {
 
 #[cfg(feature = "toml")]
 builtin_index!(
-    TomlIndex,
-    "index.toml",
-    TomlIndexError,
-    |b: &[u8]| toml::from_slice::<Model>(b).map_err(TomlIndexError::from),
+    Toml,
+    TomlError,
+    |b: &[u8]| toml::from_slice::<Model>(b).map_err(TomlError::from),
     |m: &Model| toml::to_string_pretty(m)
         .map(String::into_bytes)
-        .map_err(TomlIndexError::from)
+        .map_err(TomlError::from)
 );

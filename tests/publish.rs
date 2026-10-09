@@ -1,14 +1,15 @@
-//! Publishing through `Museum` into the in-memory store: a registry starts with an empty signed
+//! Publishing through `Registry` into the in-memory store: a registry starts with an empty signed
 //! index, a release is added, a published version never changes, and what is uploaded reads back.
 
 #![allow(clippy::unwrap_used)]
 
 mod common;
 
+use std::path::Path;
 use std::path::PathBuf;
 
-use common::Fault;
 use common::LINUX;
+use common::MemIndex;
 use common::MemStore;
 use common::WIN;
 use common::artifact;
@@ -18,6 +19,7 @@ use common::keypair;
 use common::registry;
 use common::seeded;
 use museum::NewRelease;
+use museum::Registry;
 use museum::ReleaseIndex;
 use museum::VersionReq;
 use rstest::rstest;
@@ -30,12 +32,17 @@ enum Existing {
     Broken,
 }
 
-fn store(existing: Existing, keys: &minisign::KeyPair) -> MemStore {
-    match existing {
-        Existing::Nothing => MemStore::default(),
+fn registry_with(
+    existing: Existing,
+    keys: &minisign::KeyPair,
+    dir: &Path,
+) -> Registry<MemStore, MemIndex> {
+    let (store, index) = match existing {
         Existing::Fixture => seeded(&fixture(), keys),
-        Existing::Broken => MemStore::default().with_faults(&[Fault::Broken]),
-    }
+        Existing::Nothing | Existing::Broken => (MemStore::default(), MemIndex::default()),
+    };
+    *index.place().broken.lock().unwrap() = matches!(existing, Existing::Broken);
+    registry(store, index, &[keys], dir)
 }
 
 #[rstest]
@@ -73,7 +80,7 @@ async fn publishing_updates_the_index(
         interface: 2,
         files: &files,
     };
-    let museum = registry(store(existing, &keys), &[&keys], downloads.path());
+    let museum = registry_with(existing, &keys, downloads.path());
 
     let published = museum.publish(release, &keys.sk).await;
 
@@ -90,7 +97,7 @@ async fn publishing_updates_the_index(
 #[rstest]
 #[case::fresh_registry_initialised(Existing::Nothing, Ok(0))]
 #[case::initialised_registry_refused(Existing::Fixture, Err("AlreadyInitialised"))]
-#[case::init_store_failure_passed_through(Existing::Broken, Err("Store(Broken)"))]
+#[case::init_index_failure_passed_through(Existing::Broken, Err("IndexStore(Broken)"))]
 #[tokio::test]
 async fn init_creates_an_empty_signed_index(
     #[case] existing: Existing,
@@ -98,7 +105,7 @@ async fn init_creates_an_empty_signed_index(
 ) {
     let dir = TempDir::new().unwrap();
     let keys = keypair();
-    let museum = registry(store(existing, &keys), &[&keys], dir.path());
+    let museum = registry_with(existing, &keys, dir.path());
 
     let initialised = museum.init(&keys.sk).await;
 

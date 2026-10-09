@@ -1,5 +1,6 @@
-//! `Museum`: the one door through which a host reads a registry — bootstrap, the verified index,
-//! resolution and atomic installs into the download directory. Publishing lives in `publish`.
+//! `Registry`: the one door through which a host reads a registry. It owns bootstrapping, the
+//! verified index, resolution and atomic installs into the download directory. Publishing lives in
+//! `publish`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -19,13 +20,15 @@ use tokio::sync::Mutex;
 use tokio::sync::OnceCell;
 
 use crate::error::Error;
-use crate::error::MuseumError;
+use crate::error::RegistryError;
 use crate::error::io;
 use crate::index::ReleaseIndex;
+use crate::index::Signed;
+use crate::index::store::IndexStore;
 use crate::resolve::Build;
 use crate::resolve::resolve;
+use crate::store::Artifact;
 use crate::store::ByteStream;
-use crate::store::Object;
 use crate::store::Store;
 use crate::store::StoreError;
 
@@ -42,7 +45,7 @@ pub struct Fetched {
     pub from_cache: bool,
 }
 
-pub struct Museum<S: Store, X: ReleaseIndex> {
+pub struct Registry<S: Store, X: ReleaseIndex> {
     pub(crate) store: S,
     pub(crate) empty: X,
     pub(crate) trusted_keys: Vec<PublicKey>,
@@ -51,8 +54,8 @@ pub struct Museum<S: Store, X: ReleaseIndex> {
     loaded: OnceCell<Arc<X>>,
 }
 
-impl<S: Store, X: ReleaseIndex> Museum<S, X> {
-    pub fn new(store: S, index: X, options: Options) -> Result<Self, MuseumError<S, X>> {
+impl<S: Store, X: ReleaseIndex> Registry<S, X> {
+    pub fn new(store: S, index: X, options: Options) -> Result<Self, RegistryError<S, X>> {
         let download_dir =
             std::path::absolute(&options.download_dir).map_err(io(&options.download_dir))?;
         Ok(Self {
@@ -65,7 +68,7 @@ impl<S: Store, X: ReleaseIndex> Museum<S, X> {
         })
     }
 
-    pub async fn index(&self) -> Result<Arc<X>, MuseumError<S, X>> {
+    pub async fn index(&self) -> Result<Arc<X>, RegistryError<S, X>> {
         let loaded = self
             .loaded
             .get_or_try_init(|| async { self.load(&self.trusted_keys).await.map(Arc::new) });
@@ -78,7 +81,7 @@ impl<S: Store, X: ReleaseIndex> Museum<S, X> {
         target: &str,
         interface: u32,
         wants: &[VersionReq],
-    ) -> Result<Build, MuseumError<S, X>> {
+    ) -> Result<Build, RegistryError<S, X>> {
         Ok(resolve(
             &*self.index().await?,
             package,
@@ -88,7 +91,7 @@ impl<S: Store, X: ReleaseIndex> Museum<S, X> {
         )?)
     }
 
-    pub async fn fetch(&self, build: &Build) -> Result<Fetched, MuseumError<S, X>> {
+    pub async fn fetch(&self, build: &Build) -> Result<Fetched, RegistryError<S, X>> {
         let name = format!(
             "{}-{}{}",
             build.package,
@@ -123,12 +126,12 @@ impl<S: Store, X: ReleaseIndex> Museum<S, X> {
             .await
             .map_err(io(&self.download_dir))?;
         let part = self.download_dir.join(format!("{name}.part"));
-        let object = Object::Artifact {
+        let artifact = Artifact {
             package: &build.package,
             version: &build.version,
             target: &build.target,
         };
-        let written = self.download(object, &part, &build.digest.sha256).await;
+        let written = self.download(artifact, &part, &build.digest.sha256).await;
         if written.is_err() {
             let _ = tokio::fs::remove_file(&part).await;
         }
@@ -147,7 +150,7 @@ impl<S: Store, X: ReleaseIndex> Museum<S, X> {
         wanted: &[(String, VersionReq)],
         target: &str,
         interface: u32,
-    ) -> BTreeMap<String, Result<Fetched, MuseumError<S, X>>> {
+    ) -> BTreeMap<String, Result<Fetched, RegistryError<S, X>>> {
         let mut by_package: BTreeMap<&str, Vec<VersionReq>> = BTreeMap::new();
         for (package, want) in wanted {
             by_package.entry(package).or_default().push(want.clone());
@@ -162,49 +165,33 @@ impl<S: Store, X: ReleaseIndex> Museum<S, X> {
         join_all(each).await.into_iter().collect()
     }
 
-    pub(crate) async fn load(&self, keys: &[PublicKey]) -> Result<X, MuseumError<S, X>> {
-        let file_name = self.empty.file_name();
-        let bytes = self.read(Object::Index { file_name }).await?;
-        let signature = match self.read(Object::Signature { file_name }).await {
-            Err(Error::Store(e)) if e.not_found() => {
-                return Err(Error::BadSignature {
-                    reason: format!("no {file_name}.minisig: {e}"),
-                });
-            }
-            other => other?,
-        };
-        let signature = Signature::decode(&String::from_utf8_lossy(&signature)).map_err(|e| {
-            Error::BadSignature {
-                reason: e.to_string(),
-            }
-        })?;
+    pub(crate) async fn load(&self, keys: &[PublicKey]) -> Result<X, RegistryError<S, X>> {
+        let Signed { index, signature } = IndexStore::read(self.empty.store())
+            .await
+            .map_err(Error::IndexStore)?;
+        let refused = |reason: String| Error::BadSignature { reason };
+        let signature =
+            signature.ok_or_else(|| refused("the index has no signature".to_owned()))?;
+        let signature = Signature::decode(&String::from_utf8_lossy(&signature))
+            .map_err(|e| refused(e.to_string()))?;
         if !keys
             .iter()
-            .any(|key| key.verify(&bytes, &signature, false).is_ok())
+            .any(|key| key.verify(&index, &signature, false).is_ok())
         {
-            return Err(Error::BadSignature {
-                reason: format!("{file_name} is not signed by a trusted key"),
-            });
+            return Err(refused(
+                "the index is not signed by a trusted key".to_owned(),
+            ));
         }
-        self.empty.decode(&bytes).map_err(Error::Index)
-    }
-
-    pub(crate) async fn read(&self, object: Object<'_>) -> Result<Vec<u8>, MuseumError<S, X>> {
-        let mut stream = self.open(object).await?;
-        let mut bytes = Vec::new();
-        while let Some(chunk) = stream.next().await {
-            bytes.extend_from_slice(&chunk.map_err(Error::Store)?);
-        }
-        Ok(bytes)
+        self.empty.decode(&index).map_err(Error::Index)
     }
 
     async fn download(
         &self,
-        object: Object<'_>,
+        artifact: Artifact<'_>,
         part: &Path,
         expected: &str,
-    ) -> Result<(String, u64), MuseumError<S, X>> {
-        let mut stream = self.open(object).await?;
+    ) -> Result<(String, u64), RegistryError<S, X>> {
+        let mut stream = self.open(artifact).await?;
         let mut file = tokio::fs::File::create(part).await.map_err(io(part))?;
         let mut hasher = Sha256::new();
         let mut bytes = 0;
@@ -217,7 +204,7 @@ impl<S: Store, X: ReleaseIndex> Museum<S, X> {
         file.flush().await.map_err(io(part))?;
         let actual = format!("{:x}", hasher.finalize());
         if actual != expected {
-            let object = self.store.location(object).to_string();
+            let object = self.store.location(artifact).to_string();
             return Err(Error::DigestMismatch {
                 object,
                 expected: expected.to_owned(),
@@ -235,13 +222,16 @@ impl<S: Store, X: ReleaseIndex> Museum<S, X> {
         Ok((actual, bytes))
     }
 
-    async fn open(&self, object: Object<'_>) -> Result<ByteStream<S::Error>, MuseumError<S, X>> {
-        self.authorised(|session| async move { self.store.open(&session, object).await })
+    async fn open(
+        &self,
+        artifact: Artifact<'_>,
+    ) -> Result<ByteStream<S::Error>, RegistryError<S, X>> {
+        self.authorised(|session| async move { self.store.open(&session, artifact).await })
             .await
     }
 
     /// Runs `call` with the session, re-bootstrapping once if the store reports it unauthorized.
-    pub(crate) async fn authorised<T, F, Fut>(&self, call: F) -> Result<T, MuseumError<S, X>>
+    pub(crate) async fn authorised<T, F, Fut>(&self, call: F) -> Result<T, RegistryError<S, X>>
     where
         F: Fn(Arc<S::Session>) -> Fut,
         Fut: Future<Output = Result<T, S::Error>>,
@@ -259,7 +249,7 @@ impl<S: Store, X: ReleaseIndex> Museum<S, X> {
     async fn session(
         &self,
         stale: Option<&Arc<S::Session>>,
-    ) -> Result<Arc<S::Session>, MuseumError<S, X>> {
+    ) -> Result<Arc<S::Session>, RegistryError<S, X>> {
         let mut slot = self.session.lock().await;
         if let Some(current) = slot.as_ref()
             && stale.is_none_or(|stale| !Arc::ptr_eq(stale, current))
@@ -269,5 +259,17 @@ impl<S: Store, X: ReleaseIndex> Museum<S, X> {
         let fresh = Arc::new(self.store.bootstrap().await.map_err(Error::Store)?);
         *slot = Some(fresh.clone());
         Ok(fresh)
+    }
+}
+
+#[cfg(feature = "github")]
+impl<X: ReleaseIndex> Registry<crate::github::GithubReleases, X> {
+    /// The executables live in `github`'s releases; the index wherever `index`'s store says.
+    pub fn github(
+        github: &crate::github::Github,
+        index: X,
+        options: Options,
+    ) -> Result<Self, RegistryError<crate::github::GithubReleases, X>> {
+        Self::new(github.releases(), index, options)
     }
 }
