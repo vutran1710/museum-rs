@@ -1,6 +1,6 @@
 [package]
 name = "museum-cli"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 rust-version = "1.85"
 description = "Start a museum registry and publish executables into it"
@@ -25,7 +25,7 @@ path = "src/main.rs"
 
 [dependencies]
 # the registry itself, with the GitHub and GitLab stores and every built-in index
-museum = { path = "..", version = "0.4.0", features = ["github", "gitlab", "json", "yaml", "toml"] }
+museum = { path = "..", version = "0.4.1", features = ["github", "gitlab", "json", "yaml", "toml"] }
 # argument parsing
 clap = { version = "4", features = ["derive"] }
 # async runtime for the registry calls

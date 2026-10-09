@@ -149,7 +149,7 @@ to the repository.
 ## 10. Releasing
 
 Set the same version in `Cargo.toml` and `cli/Cargo.toml`, commit, then push a matching tag
-(`git tag v0.4.0 && git push origin v0.4.0`). The publish workflow runs clippy and the tests on Linux
+(`git tag v0.4.1 && git push origin v0.4.1`). The publish workflow runs clippy and the tests on Linux
 and Windows, the nightly format check and the 100% line-coverage gate, refuses a tag that does not
 match both crate versions, then publishes `museum` and `museum-cli` with the `CARGO_REGISTRY_TOKEN`
 secret of the `CARGO_REGISTRY_TOKEN` environment. In parallel it builds `museum` for Linux (x86_64,
