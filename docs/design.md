@@ -131,7 +131,10 @@ Set the same version in `Cargo.toml` and `cli/Cargo.toml`, commit, then push a m
 (`git tag v0.2.0 && git push origin v0.2.0`). The publish workflow runs clippy and the tests on Linux
 and Windows, the nightly format check and the 100% line-coverage gate, refuses a tag that does not
 match both crate versions, then publishes `museum` and `museum-cli` with the `CARGO_REGISTRY_TOKEN`
-secret of the `CARGO_REGISTRY_TOKEN` environment.
+secret of the `CARGO_REGISTRY_TOKEN` environment. In parallel it builds `museum` for Linux (x86_64,
+aarch64), macOS (x86_64, aarch64) and Windows (x86_64), and attaches the archives and their `.sha256`
+to the GitHub release; `cargo binstall museum-cli` downloads them. Running the workflow by hand with a
+`tag` input rebuilds and attaches the binaries of an existing release without republishing crates.
 
 ## 11. Open questions
 

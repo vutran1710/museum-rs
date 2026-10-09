@@ -10,6 +10,15 @@ readme = "../README.md"
 keywords = ["registry", "plugins", "publish", "github-releases", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 
+# `cargo binstall museum-cli` downloads the binaries the publish workflow attaches to each release.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/museum-v{ version }-{ target }{ archive-suffix }"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
 [[bin]]
 name = "museum"
 path = "src/main.rs"

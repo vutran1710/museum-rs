@@ -44,8 +44,9 @@ A public registry needs nothing else. For a private one, pass the header GitHub 
 
 ## Publish, from your pipeline
 
+Get `museum` from the [releases page](https://github.com/vutran1710/museum-rs/releases) (Linux, macOS, Windows), or with `cargo install museum-cli`.
+
 ```sh
-cargo install museum-cli
 export GITHUB_TOKEN=$(gh auth token)
 
 museum init --registry https://github.com/acme/plugins --index index.json --prefix acme-   # once
