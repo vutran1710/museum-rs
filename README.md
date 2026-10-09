@@ -279,6 +279,16 @@ cargo llvm-cov --workspace --all-features --fail-under-lines 100
 
 Every test is a parameterised `rstest` table. The GitHub stores and the CLI are tested against a real local HTTP server, never a mocked client.
 
+### Releasing
+
+Set the same version in `Cargo.toml` and `cli/Cargo.toml`, commit, then push a matching tag:
+
+```sh
+git tag v0.1.1 && git push origin v0.1.1
+```
+
+The [publish workflow](.github/workflows/publish.yml) runs the checks above on Linux and Windows, refuses a tag that does not match both crate versions, and publishes `museum`, then `museum-cli`. It needs a crates.io token in the repository secret `CARGO_REGISTRY_TOKEN`.
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT), at your option.

@@ -1,0 +1,70 @@
+# Publishes museum and museum-cli to crates.io when a `v<version>` tag is pushed, after the same
+# checks as local development. Run it by hand (workflow_dispatch) to try the checks without publishing.
+name: publish
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --all-features
+
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+      - run: cargo +nightly fmt --all --check
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - run: cargo llvm-cov --workspace --all-features --fail-under-lines 100
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, quality]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Tag matches both crate versions
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | "\(.name) \(.version)"' \
+            | while read -r name version; do
+                if [ "$version" != "$tag" ]; then
+                  echo "::error::$name is $version but the tag is v$tag"
+                  exit 1
+                fi
+              done
+      - run: cargo publish -p museum
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - run: cargo publish -p museum-cli
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
