@@ -791,7 +791,7 @@ dependencies = [
 
 [[package]]
 name = "museum"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -812,7 +812,7 @@ dependencies = [
 
 [[package]]
 name = "museum-cli"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "clap",
