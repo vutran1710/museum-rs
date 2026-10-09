@@ -157,11 +157,14 @@ async fn run<X: ReleaseIndex>(
     let password = std::env::var(PASSWORD_ENV).ok();
     match &cli.command {
         Command::Init(_) => {
-            let keys = minisign::KeyPair::generate_encrypted_keypair(password)?;
+            let password = password.ok_or(format!("set {PASSWORD_ENV} to protect the new key"))?;
+            let keys = minisign::KeyPair::generate_encrypted_keypair(Some(password.clone()))?;
+            let stored = keys.sk.to_box(Some("museum signing key"))?;
+            let signing_key = minisign::SecretKey::from_box(stored.clone(), Some(password))?;
             let mut key_file = create_new(&config.secret_key, 0o600)?;
             let initialised: Result<_, Box<dyn Error>> = async {
                 let config_file = create_new(&cli.config, 0o644)?;
-                let uploads = museum.init(&keys.sk).await.inspect_err(|_| {
+                let uploads = museum.init(&signing_key).await.inspect_err(|_| {
                     let _ = std::fs::remove_file(&cli.config);
                 })?;
                 Ok((uploads, config_file))
@@ -170,8 +173,7 @@ async fn run<X: ReleaseIndex>(
             let (uploads, mut config_file) = initialised.inspect_err(|_| {
                 let _ = std::fs::remove_file(&config.secret_key);
             })?;
-            let secret_key = keys.sk.to_box(Some("museum signing key"))?.into_string();
-            key_file.write_all(secret_key.as_bytes())?;
+            key_file.write_all(stored.into_string().as_bytes())?;
             config.public_keys.push(keys.pk.to_base64());
             config_file.write_all(toml::to_string_pretty(&config)?.as_bytes())?;
             uploads

@@ -1,0 +1,7 @@
+registry = "https://github.com/vutran1710/museum-rs"
+index = "index.yaml"
+prefix = "yaml-"
+public_keys = ["RWQGzNWwWnH9LjxybYe0zTzBRG7S0cJ10iBYT/sX5I1iW1VoQAn1XgMK"]
+secret_key = "/Users/vutran/.config/museum/museum-rs-yaml.key"
+api_url = "https://api.github.com"
+token_env = "GITHUB_TOKEN"

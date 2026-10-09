@@ -80,13 +80,17 @@ cargo install museum-cli         # the `museum` command for release pipelines
 use std::time::Duration;
 
 use museum::{HOST_TARGET, JsonIndex, Museum, Options, PublicKey, VersionReq};
-use museum::github::{GITHUB, GithubPublic};
+use museum::github::{GITHUB, GithubPublic, reqwest};
+
+// The publisher's public key: one of `public_keys` in the museum.toml that `museum init` wrote.
+const PUBLISHER_KEY: &str = "RW...";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let store = GithubPublic::new(GITHUB, "acme", "plugins", Duration::from_secs(30))?.prefix("acme-");
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build()?;
+    let store = GithubPublic::new(client, GITHUB, "acme", "plugins").prefix("acme-");
     let options = Options {
-        trusted_keys: vec![PublicKey::from_base64("RWTaqJSmM0HOp9cjMeAXWg2Ln1xCIpBEx7CTC3uxAJxm1F8qjCbXhOqp")?],
+        trusted_keys: vec![PublicKey::from_base64(PUBLISHER_KEY)?],
         download_dir: "drivers".into(), // relative paths resolve against the current directory, once
     };
     let museum = Museum::new(store, JsonIndex::default(), options)?;
@@ -118,7 +122,8 @@ What `fetch_all` does:
 # once per registry: creates a signing key, museum.toml and an empty signed index
 export GITHUB_TOKEN=$(gh auth token)
 export MUSEUM_KEY_PASSWORD=...        # protects the generated secret key
-museum init --registry https://github.com/acme/plugins --index index.yaml --prefix acme-
+museum init --registry https://github.com/acme/plugins --index index.yaml --prefix acme- \
+  --secret-key ~/.config/museum/acme-plugins.key   # keep it out of the repository
 
 # every release
 museum publish --package modbus --version 0.4.2 --interface 2 \
@@ -132,7 +137,7 @@ museum publish --package modbus --version 0.4.2 --interface 2 \
 registry = "https://github.com/acme/plugins"
 index = "index.yaml"
 prefix = "acme-"
-public_keys = ["RWTaqJSm..."]                       # give these to your hosts
+public_keys = ["RWT..."]                       # give these to your hosts
 secret_key = "/home/you/.config/museum/acme-plugins.key"   # a path, never the key
 api_url = "https://api.github.com"                  # or a GitHub Enterprise API root
 token_env = "GITHUB_TOKEN"
@@ -144,7 +149,7 @@ The same flow is available from Rust as `Museum::init` and `Museum::publish` for
 
 ## Bring your own store or index
 
-A store says where bytes live. Bootstrapping is per store type, and only `Museum` calls it.
+A store says where bytes live, the index included: the built-in GitHub stores keep it in a release tagged `index`, and another store could read it from a file in the repository, a bucket or a CDN. Bootstrapping is per store type, and only `Museum` calls it.
 
 ```rust
 use museum::{ByteStream, Location, Object, Store, StoreError};

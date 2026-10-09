@@ -129,3 +129,23 @@ pub async fn writes(server: &MockServer) -> Vec<String> {
         })
         .collect()
 }
+
+pub async fn uploads(server: &MockServer) -> std::collections::HashMap<String, Vec<u8>> {
+    let requests = server.received_requests().await.unwrap();
+    let uploads = requests
+        .into_iter()
+        .filter(|r| r.url.path().starts_with("/upload/"));
+    uploads
+        .map(|r| {
+            (
+                r.url
+                    .query_pairs()
+                    .find(|(key, _)| key == "name")
+                    .unwrap()
+                    .1
+                    .into_owned(),
+                r.body,
+            )
+        })
+        .collect()
+}

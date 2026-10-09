@@ -69,3 +69,11 @@ unwrap_used = "deny"
 expect_used = "deny"
 wildcard_imports = "deny"
 enum_glob_use = "deny"
+
+[[example]]
+name = "fetch_json"
+required-features = ["github", "json", "toml"]
+
+[[example]]
+name = "fetch_yaml"
+required-features = ["github", "yaml", "toml"]

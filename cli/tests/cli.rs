@@ -86,7 +86,28 @@ async fn cli_init_writes_config_and_index(
     assert_eq!(writes(&server).await, requests);
     assert_eq!(dir.path().join("museum.toml").exists(), expected.is_ok());
     if let Ok(config) = std::fs::read_to_string(dir.path().join("museum.toml")) {
-        assert!(config.contains("public_keys = [\"RW"));
+        let public_key = config
+            .split("public_keys = [\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        let uploaded = github::uploads(&server).await;
+        let signature = minisign::SignatureBox::from_string(&String::from_utf8_lossy(
+            &uploaded["index.json.minisig"],
+        ))
+        .unwrap();
+        let public_key = minisign::PublicKey::from_base64(public_key).unwrap();
+        minisign::verify(
+            &public_key,
+            &signature,
+            std::io::Cursor::new(&uploaded["index.json"]),
+            true,
+            false,
+            false,
+        )
+        .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

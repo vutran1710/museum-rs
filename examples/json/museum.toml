@@ -1,0 +1,7 @@
+registry = "https://github.com/vutran1710/museum-rs"
+index = "index.json"
+prefix = "json-"
+public_keys = ["RWT6C9mxilipEKLszccUNipDg/A0Fjvtt5PzfbnFad+Mw/rNPNz7SnqO"]
+secret_key = "/Users/vutran/.config/museum/museum-rs-json.key"
+api_url = "https://api.github.com"
+token_env = "GITHUB_TOKEN"
