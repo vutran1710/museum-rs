@@ -2,6 +2,8 @@
 //! resolution, digest checks and installs; a `Store` says where executables live, an `IndexStore`
 //! where the index file lives, and a `ReleaseIndex` what that file looks like.
 
+#[cfg(any(feature = "github", feature = "gitlab"))]
+mod address;
 mod error;
 pub mod headers;
 mod index;
@@ -13,6 +15,8 @@ mod transport;
 
 #[cfg(feature = "github")]
 pub mod github;
+#[cfg(feature = "gitlab")]
+pub mod gitlab;
 
 pub use error::Error;
 pub use error::RegistryError;

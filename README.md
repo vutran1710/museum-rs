@@ -40,7 +40,17 @@ for (package, fetched) in registry.fetch_all(&wanted, HOST_TARGET, 2).await {
 }
 ```
 
-A public registry needs nothing else. For a private one, add the header GitHub expects; museum builds the HTTP client itself:
+GitLab works the same way, with executables in the project's generic package registry:
+
+```rust
+use museum::gitlab::Gitlab;
+
+let gl = Gitlab::new("acme/tools/plugins")?.prefix("acme-");        // .host(..) for self-managed GitLab
+let index = Json::new(gl.package_file("index/1.0.0/index.json")?);  // or gl.file("main/registry/index.json")?
+let registry = Registry::gitlab(&gl, index, Options { download_dir: "drivers".into() })?;
+```
+
+A public registry needs nothing else. For a private one, add the header the forge expects; museum builds the HTTP client itself:
 
 ```rust
 use museum::headers;
@@ -57,7 +67,7 @@ Get `museum` from the [releases page](https://github.com/vutran1710/museum-rs/re
 ```sh
 export GITHUB_TOKEN=$(gh auth token)
 
-museum init --registry https://github.com/acme/plugins --index index.json --prefix acme-   # once
+museum init --registry https://github.com/acme/plugins --index index.json --prefix acme-   # once; or https://gitlab.com/<group>/<project>
 museum publish --package modbus --version 0.4.2 --interface 2 \
   --file x86_64-unknown-linux-gnu=target/release/modbus \
   --file x86_64-pc-windows-msvc=target/x86_64-pc-windows-msvc/release/modbus.exe
@@ -69,7 +79,7 @@ museum publish --package modbus --version 0.4.2 --interface 2 \
 
 <p align="center"><img src="assets/pieces.svg" alt="Registry is built from a Store for executables and a ReleaseIndex for the index format, which holds the IndexStore that finds the index file." width="100%"></p>
 
-GitHub and JSON, YAML, TOML are built in. Implement `Store`, `IndexStore` or `ReleaseIndex` to keep executables on S3, the index on a CDN, or use another file format. [`examples/local_registry.rs`](examples/local_registry.rs) does the whole cycle with a custom store, in about 120 lines.
+GitHub, GitLab and JSON, YAML, TOML are built in. Implement `Store`, `IndexStore` or `ReleaseIndex` to keep executables on S3, the index on a CDN, or use another file format. [`examples/local_registry.rs`](examples/local_registry.rs) does the whole cycle with a custom store, in about 120 lines.
 
 ## What you can rely on
 

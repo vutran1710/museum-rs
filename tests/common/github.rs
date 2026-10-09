@@ -135,12 +135,13 @@ pub async fn writes(server: &MockServer) -> Vec<String> {
         .collect()
 }
 
-/// Every file written, by file name: release uploads as sent, contents-API commits decoded.
+/// Every file written, by file name: release uploads and package uploads as sent, commits
+/// (GitHub or GitLab) decoded from their base64 `content`.
 pub async fn uploads(server: &MockServer) -> std::collections::HashMap<String, Vec<u8>> {
     use base64::Engine;
     let requests = server.received_requests().await.unwrap();
     let mut written = std::collections::HashMap::new();
-    for request in requests {
+    for request in requests.into_iter().filter(|r| r.method.as_str() != "GET") {
         let name = request
             .url
             .query_pairs()
@@ -153,16 +154,19 @@ pub async fn uploads(server: &MockServer) -> std::collections::HashMap<String, V
             .next_back()
             .unwrap()
             .to_owned();
-        match (request.method.as_str(), name) {
-            ("POST", Some(name)) => drop(written.insert(name, request.body)),
-            ("PUT", _) => {
-                let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
-                let content = base64::engine::general_purpose::STANDARD
-                    .decode(body["content"].as_str().unwrap())
-                    .unwrap();
-                written.insert(file, content);
-            }
-            _ => {}
+        let body: Option<serde_json::Value> = serde_json::from_slice(&request.body).ok();
+        let committed = body.and_then(|body| body["content"].as_str().map(str::to_owned));
+        match (name, committed) {
+            (Some(name), _) => drop(written.insert(name, request.body)),
+            (None, Some(content)) => drop(
+                written.insert(
+                    file,
+                    base64::engine::general_purpose::STANDARD
+                        .decode(content)
+                        .unwrap(),
+                ),
+            ),
+            (None, None) => drop(written.insert(file, request.body)),
         }
     }
     written

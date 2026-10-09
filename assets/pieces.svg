@@ -16,7 +16,7 @@
     <text x="345" y="64" font-size="14" font-weight="700">S: Store</text>
     <text x="345" y="84" font-size="12" fill="#3a3f63">where the executables live</text>
     <text x="345" y="112" font-size="12" fill="#6b7190">built in</text>
-    <text x="400" y="112" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12">gh.releases()</text>
+    <text x="400" y="112" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12">gh.releases()  gl.packages()</text>
 
     <!-- format -->
     <rect x="330" y="164" width="250" height="96" rx="10" fill="#fff8e6" stroke="#f2c45a" stroke-width="2"/>
@@ -26,12 +26,13 @@
     <text x="400" y="236" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12">Json  Yaml  Toml</text>
 
     <!-- index store -->
-    <rect x="650" y="164" width="240" height="96" rx="10" fill="#fff8e6" stroke="#f2c45a" stroke-width="2" stroke-dasharray="6 4"/>
+    <rect x="650" y="164" width="240" height="104" rx="10" fill="#fff8e6" stroke="#f2c45a" stroke-width="2" stroke-dasharray="6 4"/>
     <text x="665" y="188" font-size="14" font-weight="700">X::Store: IndexStore</text>
     <text x="665" y="208" font-size="12" fill="#3a3f63">where that one file lives</text>
     <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5">
-      <text x="665" y="232">gh.release_file()  gh.file()</text>
-      <text x="665" y="250">HttpFile  LocalFile</text>
+      <text x="665" y="230">gh.release_file()  gh.file()</text>
+      <text x="665" y="244">gl.package_file()  gl.file()</text>
+      <text x="665" y="258">HttpFile  LocalFile</text>
     </g>
 
     <!-- arrows -->

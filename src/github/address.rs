@@ -4,6 +4,8 @@
 use std::fmt;
 use std::str::FromStr;
 
+use crate::address::reference_and_path;
+use crate::address::segments;
 use crate::github::GithubError;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,14 +22,10 @@ pub struct FileAddress {
     pub path: String,
 }
 
-fn segments<'a>(address: &'a str, expected: &str) -> Result<Vec<&'a str>, GithubError> {
-    let segments: Vec<&str> = address.trim_matches('/').split('/').collect();
-    match segments.iter().any(|segment| segment.is_empty()) {
-        true => Err(GithubError::BadAddress {
-            address: address.to_owned(),
-            expected: expected.to_owned(),
-        }),
-        false => Ok(segments),
+fn refused(address: &str, expected: &str) -> GithubError {
+    GithubError::BadAddress {
+        address: address.to_owned(),
+        expected: expected.to_owned(),
     }
 }
 
@@ -35,16 +33,12 @@ impl FromStr for RepoAddress {
     type Err = GithubError;
 
     fn from_str(address: &str) -> Result<Self, GithubError> {
-        let expected = "owner/repo";
-        match segments(address, expected)?[..] {
-            [owner, repo] => Ok(Self {
-                owner: owner.to_owned(),
-                repo: repo.to_owned(),
+        match segments(address).as_deref() {
+            Some([owner, repo]) => Ok(Self {
+                owner: (*owner).to_owned(),
+                repo: (*repo).to_owned(),
             }),
-            _ => Err(GithubError::BadAddress {
-                address: address.to_owned(),
-                expected: expected.to_owned(),
-            }),
+            _ => Err(refused(address, "owner/repo")),
         }
     }
 }
@@ -53,17 +47,9 @@ impl FromStr for FileAddress {
     type Err = GithubError;
 
     fn from_str(address: &str) -> Result<Self, GithubError> {
-        let expected = "<ref>/<path>";
-        match &segments(address, expected)?[..] {
-            [reference, path @ ..] if !path.is_empty() => Ok(Self {
-                reference: (*reference).to_owned(),
-                path: path.join("/"),
-            }),
-            _ => Err(GithubError::BadAddress {
-                address: address.to_owned(),
-                expected: expected.to_owned(),
-            }),
-        }
+        let (reference, path) =
+            reference_and_path(address).ok_or_else(|| refused(address, "<ref>/<path>"))?;
+        Ok(Self { reference, path })
     }
 }
 

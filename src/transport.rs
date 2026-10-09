@@ -69,12 +69,12 @@ impl Http {
         self.client.get(url).timeout(self.timeout)
     }
 
-    #[cfg_attr(not(feature = "github"), allow(dead_code))]
+    #[cfg_attr(not(any(feature = "github", feature = "gitlab")), allow(dead_code))]
     pub(crate) fn post(&self, url: impl IntoUrl) -> RequestBuilder {
         self.client.post(url).timeout(self.timeout)
     }
 
-    #[cfg_attr(not(feature = "github"), allow(dead_code))]
+    #[cfg_attr(not(any(feature = "github", feature = "gitlab")), allow(dead_code))]
     pub(crate) fn put(&self, url: impl IntoUrl) -> RequestBuilder {
         self.client.put(url).timeout(self.timeout)
     }
@@ -125,7 +125,7 @@ pub(crate) async fn bytes(request: RequestBuilder, url: &str) -> Result<Vec<u8>,
 }
 
 /// A file that does not exist is `None`; any other failure stays an error.
-#[cfg_attr(not(feature = "github"), allow(dead_code))]
+#[cfg_attr(not(any(feature = "github", feature = "gitlab")), allow(dead_code))]
 pub(crate) fn optional(read: Result<Vec<u8>, HttpError>) -> Result<Option<Vec<u8>>, HttpError> {
     match read {
         Err(e) if e.not_found() => Ok(None),

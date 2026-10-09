@@ -16,6 +16,7 @@ json = ["dep:serde", "dep:serde_json", "semver/serde"]
 yaml = ["dep:serde", "dep:serde_yaml_ng", "semver/serde"]
 toml = ["dep:serde", "dep:toml", "semver/serde"]
 github = ["dep:serde", "dep:serde_json", "dep:base64"]
+gitlab = ["dep:serde", "dep:serde_json", "dep:base64"]
 
 [dependencies]
 # typed public errors

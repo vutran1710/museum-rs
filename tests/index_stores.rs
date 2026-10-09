@@ -1,7 +1,8 @@
-//! Where an index file can live: a local file, any URL, a GitHub release asset, or a file committed
-//! to a GitHub repository. Each store reads what is there and writes where it can.
+//! Where an index file can live: a local file, any URL, a GitHub release asset, a file committed to
+//! a GitHub or GitLab repository, or a GitLab generic package. Each store reads what is there and
+//! writes where it can.
 
-#![cfg(feature = "github")]
+#![cfg(all(feature = "github", feature = "gitlab"))]
 #![allow(clippy::unwrap_used)]
 
 mod common;
@@ -15,6 +16,7 @@ use museum::IndexError;
 use museum::IndexStore;
 use museum::LocalFile;
 use museum::github::Github;
+use museum::gitlab::Gitlab;
 use rstest::rstest;
 use tempfile::TempDir;
 use wiremock::Mock;
@@ -33,6 +35,10 @@ enum Place {
     ReleaseApi,
     RepoRaw,
     RepoToken,
+    GitlabFileAnonymous,
+    GitlabFileToken,
+    GitlabPackageAnonymous,
+    GitlabPackageToken,
 }
 
 #[derive(Clone, Copy)]
@@ -67,6 +73,8 @@ async fn serve(server: &MockServer, served: Served) {
             format!("/reg/{file}"),
             format!("/acme/plugins/releases/download/index/{file}"),
             format!("/acme/plugins/main/registry/{file}"),
+            format!("/api/v4/projects/acme%2Fplugins/repository/files/registry%2F{file}/raw"),
+            format!("/api/v4/projects/acme%2Fplugins/packages/generic/index/1.0.0/{file}"),
         ] {
             Mock::given(method("GET"))
                 .and(path(at))
@@ -94,11 +102,19 @@ async fn serve(server: &MockServer, served: Served) {
             .respond_with(existing)
             .mount(server)
             .await;
+        let gitlab = path("/api/v4/projects/acme%2Fplugins/repository/files/registry%2Findex.json");
+        Mock::given(method("GET"))
+            .and(gitlab)
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .mount(server)
+            .await;
     }
-    Mock::given(method("PUT"))
-        .respond_with(ResponseTemplate::new(201))
-        .mount(server)
-        .await;
+    for written in ["PUT", "POST"] {
+        Mock::given(method(written))
+            .respond_with(ResponseTemplate::new(201))
+            .mount(server)
+            .await;
+    }
 }
 
 async fn exercise<I: IndexStore>(store: I, op: Op) -> Result<String, (String, bool)> {
@@ -117,20 +133,27 @@ async fn exercise<I: IndexStore>(store: I, op: Op) -> Result<String, (String, bo
     })
 }
 
+/// Each commit or package write, as `METHOD <path inside the repository or registry> sha=<sha>`.
 async fn commits(server: &MockServer) -> Vec<String> {
     let requests = server.received_requests().await.unwrap();
-    let puts = requests.iter().filter(|r| r.method.as_str() == "PUT");
-    puts.map(|r| {
-        let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
-        format!(
-            "{} sha={}",
-            r.url
-                .path()
-                .trim_start_matches("/repos/acme/plugins/contents/"),
-            body["sha"].as_str().unwrap_or("none")
-        )
-    })
-    .collect()
+    let markers = ["/contents/", "/repository/files/", "/packages/generic/"];
+    let written = requests
+        .iter()
+        .filter(|r| ["PUT", "POST"].contains(&r.method.as_str()));
+    written
+        .filter_map(|r| {
+            let path = r.url.path();
+            let inside = markers
+                .iter()
+                .find_map(|marker| path.split_once(marker).map(|(_, inside)| inside))?;
+            let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap_or_default();
+            Some(format!(
+                "{} {inside} sha={}",
+                r.method,
+                body["sha"].as_str().unwrap_or("none")
+            ))
+        })
+        .collect()
 }
 
 #[rstest]
@@ -142,9 +165,17 @@ async fn commits(server: &MockServer) -> Vec<String> {
 #[case::github_release_file_written(Place::ReleaseApi, Op::Write, Served::Nothing, Ok("index/index.json"), &[])]
 #[case::github_file_read_raw(Place::RepoRaw, Op::Read, Served::Index, Ok("{}"), &[])]
 #[case::github_file_read_with_token(Place::RepoToken, Op::Read, Served::Index, Ok("{}"), &[])]
-#[case::github_file_committed_over_existing(Place::RepoToken, Op::Write, Served::ExistingCommit, Ok("main:registry/index.json"), &["registry/index.json sha=abc"])]
+#[case::github_file_committed_over_existing(Place::RepoToken, Op::Write, Served::ExistingCommit, Ok("main:registry/index.json"), &["PUT registry/index.json sha=abc"])]
 #[case::github_file_without_authorization_is_read_only(Place::RepoRaw, Op::Write, Served::Nothing, Err(("Http(ReadOnly", false)), &[])]
 #[case::github_file_missing_is_not_found(Place::RepoRaw, Op::Read, Served::Nothing, Err(("Http(Refused { status: 404", true)), &[])]
+#[case::gitlab_file_read_raw(Place::GitlabFileAnonymous, Op::Read, Served::Index, Ok("{}"), &[])]
+#[case::gitlab_file_read_with_token(Place::GitlabFileToken, Op::Read, Served::Index, Ok("{}"), &[])]
+#[case::gitlab_file_created(Place::GitlabFileToken, Op::Write, Served::Nothing, Ok("main:registry/index.json"), &["POST registry%2Findex.json sha=none"])]
+#[case::gitlab_file_updated(Place::GitlabFileToken, Op::Write, Served::ExistingCommit, Ok("main:registry/index.json"), &["PUT registry%2Findex.json sha=none"])]
+#[case::gitlab_file_without_authorization_is_read_only(Place::GitlabFileAnonymous, Op::Write, Served::Nothing, Err(("Http(ReadOnly", false)), &[])]
+#[case::gitlab_file_missing_is_not_found(Place::GitlabFileAnonymous, Op::Read, Served::Nothing, Err(("Http(Refused { status: 404", true)), &[])]
+#[case::gitlab_package_file_read(Place::GitlabPackageAnonymous, Op::Read, Served::Index, Ok("{}"), &[])]
+#[case::gitlab_package_file_written(Place::GitlabPackageToken, Op::Write, Served::Nothing, Ok("index/1.0.0/index.json"), &["PUT index/1.0.0/index.json sha=none"])]
 #[tokio::test]
 async fn index_stores_read_and_write(
     #[case] place: Place,
@@ -169,6 +200,12 @@ async fn index_stores_read_and_write(
         .timeout(TIMEOUT)
         .enterprise(&uri, &uri, &uri);
 
+    let gitlab = Gitlab::new("acme/plugins")
+        .unwrap()
+        .host(&uri)
+        .timeout(TIMEOUT);
+    let gitlab_token = gitlab.clone().headers(authorised());
+
     let outcome = match place {
         Place::Local => {
             exercise(
@@ -190,6 +227,22 @@ async fn index_stores_read_and_write(
         Place::ReleaseApi => exercise(private.release_file("index/index.json").unwrap(), op).await,
         Place::RepoRaw => exercise(public.file("main/registry/index.json").unwrap(), op).await,
         Place::RepoToken => exercise(private.file("main/registry/index.json").unwrap(), op).await,
+        Place::GitlabFileAnonymous => {
+            exercise(gitlab.file("main/registry/index.json").unwrap(), op).await
+        }
+        Place::GitlabFileToken => {
+            exercise(gitlab_token.file("main/registry/index.json").unwrap(), op).await
+        }
+        Place::GitlabPackageAnonymous => {
+            exercise(gitlab.package_file("index/1.0.0/index.json").unwrap(), op).await
+        }
+        Place::GitlabPackageToken => {
+            exercise(
+                gitlab_token.package_file("index/1.0.0/index.json").unwrap(),
+                op,
+            )
+            .await
+        }
     };
 
     match (&outcome, expected) {

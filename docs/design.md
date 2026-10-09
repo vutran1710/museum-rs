@@ -114,9 +114,27 @@ this), and uploads and commits become possible. From one handle:
 `/` cannot be addressed. One repository can host several registries when their index files and
 prefixes differ.
 
+## 7a. GitLab
+
+`Gitlab::new("group/project")?` (subgroups allowed; `.host(..)` for self-managed) hands out:
+
+| Call | Gives | Layout |
+|---|---|---|
+| `gl.packages()` | executables `Store` | generic package `<package>/<version>`, file `<prefix><package>-<target>[.exe]` |
+| `gl.package_file("<package>/<version>/<file>")` | `IndexStore` | one generic package file |
+| `gl.file("<ref>/<path>")` | `IndexStore` | file committed at a branch, tag or commit (repository files API) |
+
+GitLab release assets are only links, so executables live in the generic package registry, whose
+`<package>/<version>/<file>` path already carries the version; the file name leaves it out. Writes
+need an `Authorization`, `PRIVATE-TOKEN` or `JOB-TOKEN` header. Uploading the same package file
+again keeps both and downloads get the newest; museum's immutability check still refuses to change
+a published version.
+
 ## 8. CLI
 
-`museum init` reserves `museum.toml`, writes an empty index, then writes the file. `museum publish`
+`museum init` reserves `museum.toml`, writes an empty index, then writes the file. A
+`https://github.com/<owner>/<repo>` registry uses GitHub; any other host is a GitLab project, with
+the index in the `index/1.0.0` generic package unless `index_branch` commits it. `museum publish`
 reads `museum.toml`, takes the token from the variable named by `token_env`, and sends it as the
 `Authorization` header. The index lives in the `index` release, or with `index_branch` is committed
 to the repository.

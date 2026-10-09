@@ -24,8 +24,8 @@ name = "museum"
 path = "src/main.rs"
 
 [dependencies]
-# the registry itself, with the GitHub stores and every built-in index
-museum = { path = "..", version = "0.4.0", features = ["github", "json", "yaml", "toml"] }
+# the registry itself, with the GitHub and GitLab stores and every built-in index
+museum = { path = "..", version = "0.4.0", features = ["github", "gitlab", "json", "yaml", "toml"] }
 # argument parsing
 clap = { version = "4", features = ["derive"] }
 # async runtime for the registry calls

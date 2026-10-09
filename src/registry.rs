@@ -254,3 +254,16 @@ impl<X: ReleaseIndex> Registry<crate::github::GithubReleases, X> {
         Self::new(github.releases(), index, options)
     }
 }
+
+#[cfg(feature = "gitlab")]
+impl<X: ReleaseIndex> Registry<crate::gitlab::GitlabPackages, X> {
+    /// The executables live in `gitlab`'s generic package registry; the index wherever `index`'s
+    /// store says.
+    pub fn gitlab(
+        gitlab: &crate::gitlab::Gitlab,
+        index: X,
+        options: Options,
+    ) -> Result<Self, RegistryError<crate::gitlab::GitlabPackages, X>> {
+        Self::new(gitlab.packages(), index, options)
+    }
+}

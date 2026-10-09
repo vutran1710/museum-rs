@@ -1,7 +1,7 @@
-//! `museum`: start a registry in a GitHub repository (`init`) and publish releases into it
-//! (`publish`), driven by a `museum.toml` that `init` writes. The index lives in the `index`
-//! release or, with `index_branch`, is committed to the repository. The registry logic lives in
-//! `museum`.
+//! `museum`: start a registry in a GitHub repository or GitLab project (`init`) and publish
+//! releases into it (`publish`), driven by a `museum.toml` that `init` writes. The index lives in
+//! the `index` release (GitHub) or the `index/1.0.0` generic package (GitLab), or with
+//! `index_branch` is committed to the repository. The registry logic lives in `museum`.
 
 use std::error::Error;
 use std::io::Write;
@@ -18,6 +18,7 @@ use museum::NewRelease;
 use museum::Options;
 use museum::Registry;
 use museum::ReleaseIndex;
+use museum::StoreWriter;
 use museum::Toml;
 use museum::Version;
 use museum::Yaml;
@@ -26,6 +27,9 @@ use museum::github::GITHUB_API;
 use museum::github::GITHUB_RAW;
 use museum::github::Github;
 use museum::github::GithubConfig;
+use museum::github::GithubReleases;
+use museum::gitlab::Gitlab;
+use museum::gitlab::GitlabPackages;
 use museum::headers;
 
 #[derive(Parser)]
@@ -47,14 +51,16 @@ enum Command {
 
 #[derive(Args)]
 struct InitArgs {
+    /// `https://github.com/<owner>/<repo>`, or a GitLab project `https://<host>/<group>/<project>`.
     #[arg(long)]
-    registry: GithubConfig,
+    registry: String,
     #[arg(long, default_value = "index.json")]
     index: String,
     #[arg(long, default_value = "")]
     prefix: String,
-    #[arg(long, default_value = GITHUB_API)]
-    api_url: String,
+    /// The API root, for GitHub Enterprise or a GitLab reached at another address.
+    #[arg(long)]
+    api_url: Option<String>,
     #[arg(long, default_value = "GITHUB_TOKEN")]
     token_env: String,
     /// Commit the index on this branch instead of keeping it in the `index` release.
@@ -76,10 +82,10 @@ struct PublishArgs {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Config {
-    registry: GithubConfig,
+    registry: String,
     index: String,
     prefix: String,
-    api_url: String,
+    api_url: Option<String>,
     token_env: String,
     index_branch: Option<String>,
 }
@@ -116,38 +122,108 @@ async fn museum_cli(cli: Cli) -> Result<(), Box<dyn Error>> {
             toml::from_str(&written)?
         }
     };
-    let GithubConfig { owner, repo, .. } = &config.registry;
     let token = std::env::var(&config.token_env)
-        .map_err(|_| format!("set {} to a GitHub token", config.token_env))?;
-    let gh = Github::new(&format!("{owner}/{repo}"))?
-        .headers(headers::bearer(&token)?)
-        .prefix(&config.prefix);
-    let gh = gh.enterprise(GITHUB, &config.api_url, GITHUB_RAW);
-    match config.index_branch.clone() {
-        None => {
-            with_format(
-                &gh,
-                gh.release_file(&format!("index/{}", config.index))?,
-                config,
-                &cli,
-            )
-            .await
+        .map_err(|_| format!("set {} to an access token", config.token_env))?;
+    let headers = headers::bearer(&token)?;
+    match config.registry.starts_with("https://github.com/") {
+        true => {
+            let GithubConfig { owner, repo, .. } = config.registry.parse()?;
+            let api = config.api_url.as_deref().unwrap_or(GITHUB_API);
+            let gh = Github::new(&format!("{owner}/{repo}"))?
+                .headers(headers)
+                .prefix(&config.prefix)
+                .enterprise(GITHUB, api, GITHUB_RAW);
+            match config.index_branch.clone() {
+                None => {
+                    with_format(
+                        &gh,
+                        gh.release_file(&format!("index/{}", config.index))?,
+                        config,
+                        &cli,
+                    )
+                    .await
+                }
+                Some(branch) => {
+                    with_format(
+                        &gh,
+                        gh.file(&format!("{branch}/{}", config.index))?,
+                        config,
+                        &cli,
+                    )
+                    .await
+                }
+            }
         }
-        Some(branch) => {
-            with_format(
-                &gh,
-                gh.file(&format!("{branch}/{}", config.index))?,
-                config,
-                &cli,
-            )
-            .await
+        false => {
+            let rest = config
+                .registry
+                .trim_start_matches("https://")
+                .trim_end_matches('/');
+            let (host, project) = rest.split_once('/').unwrap_or((rest, ""));
+            let host = config.api_url.clone().unwrap_or(format!("https://{host}"));
+            let gl = Gitlab::new(project)?
+                .host(&host)
+                .headers(headers)
+                .prefix(&config.prefix);
+            match config.index_branch.clone() {
+                None => {
+                    with_format(
+                        &gl,
+                        gl.package_file(&format!("index/1.0.0/{}", config.index))?,
+                        config,
+                        &cli,
+                    )
+                    .await
+                }
+                Some(branch) => {
+                    with_format(
+                        &gl,
+                        gl.file(&format!("{branch}/{}", config.index))?,
+                        config,
+                        &cli,
+                    )
+                    .await
+                }
+            }
         }
     }
 }
 
-async fn with_format<I: IndexStore>(
-    gh: &Github,
-    store: I,
+/// A forge the CLI publishes to; its registry keeps executables in the forge's own store.
+trait Forge {
+    type Store: StoreWriter;
+    fn registry<X: ReleaseIndex>(
+        &self,
+        index: X,
+        options: Options,
+    ) -> Result<Registry<Self::Store, X>, Box<dyn Error>>;
+}
+
+impl Forge for Github {
+    type Store = GithubReleases;
+    fn registry<X: ReleaseIndex>(
+        &self,
+        index: X,
+        options: Options,
+    ) -> Result<Registry<GithubReleases, X>, Box<dyn Error>> {
+        Ok(Registry::github(self, index, options)?)
+    }
+}
+
+impl Forge for Gitlab {
+    type Store = GitlabPackages;
+    fn registry<X: ReleaseIndex>(
+        &self,
+        index: X,
+        options: Options,
+    ) -> Result<Registry<GitlabPackages, X>, Box<dyn Error>> {
+        Ok(Registry::gitlab(self, index, options)?)
+    }
+}
+
+async fn with_format<F: Forge, I: IndexStore>(
+    forge: &F,
+    index: I,
     config: Config,
     cli: &Cli,
 ) -> Result<(), Box<dyn Error>> {
@@ -156,9 +232,9 @@ async fn with_format<I: IndexStore>(
         .rsplit_once('.')
         .map(|(_, extension)| extension)
     {
-        Some("json") => run(gh, Json::new(store), config, cli).await,
-        Some("yaml" | "yml") => run(gh, Yaml::new(store), config, cli).await,
-        Some("toml") => run(gh, Toml::new(store), config, cli).await,
+        Some("json") => run(forge, Json::new(index), config, cli).await,
+        Some("yaml" | "yml") => run(forge, Yaml::new(index), config, cli).await,
+        Some("toml") => run(forge, Toml::new(index), config, cli).await,
         _ => Err(format!(
             "index must end in .json, .yaml or .toml, not '{}'",
             config.index
@@ -167,8 +243,8 @@ async fn with_format<I: IndexStore>(
     }
 }
 
-async fn run<X: ReleaseIndex>(
-    gh: &Github,
+async fn run<F: Forge, X: ReleaseIndex>(
+    forge: &F,
     index: X,
     config: Config,
     cli: &Cli,
@@ -176,7 +252,7 @@ async fn run<X: ReleaseIndex>(
     let options = Options {
         download_dir: PathBuf::from("."),
     };
-    let registry = Registry::github(gh, index, options)?;
+    let registry = forge.registry(index, options)?;
     match &cli.command {
         Command::Init(_) => {
             let mut config_file = create_new(&cli.config)?;
