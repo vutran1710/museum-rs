@@ -18,7 +18,7 @@ path = "src/main.rs"
 # the registry itself, with the GitHub stores and every built-in index
 museum = { path = "..", version = "0.1.0", features = ["github", "json", "yaml", "toml"] }
 # argument parsing
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 # async runtime for the registry calls
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # museum.toml (de)serialisation

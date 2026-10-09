@@ -79,6 +79,9 @@ struct PublishArgs {
     interface: u32,
     #[arg(long = "file", value_parser = target_file, required = true)]
     files: Vec<(String, PathBuf)>,
+    /// The signing key `init` wrote. Its location is per machine, so it is not in museum.toml.
+    #[arg(long, env = "MUSEUM_SECRET_KEY")]
+    secret_key: PathBuf,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -87,7 +90,6 @@ struct Config {
     index: String,
     prefix: String,
     public_keys: Vec<String>,
-    secret_key: PathBuf,
     api_url: String,
     token_env: String,
     index_branch: Option<String>,
@@ -116,7 +118,6 @@ async fn museum_cli(cli: Cli) -> Result<(), Box<dyn Error>> {
             index: args.index.clone(),
             prefix: args.prefix.clone(),
             public_keys: Vec::new(),
-            secret_key: args.secret_key.clone(),
             api_url: args.api_url.clone(),
             token_env: args.token_env.clone(),
             index_branch: args.index_branch.clone(),
@@ -198,12 +199,12 @@ async fn run<X: ReleaseIndex>(
     let registry = Registry::github(gh, index, options)?;
     let password = std::env::var(PASSWORD_ENV).ok();
     match &cli.command {
-        Command::Init(_) => {
+        Command::Init(args) => {
             let password = password.ok_or(format!("set {PASSWORD_ENV} to protect the new key"))?;
             let keys = minisign::KeyPair::generate_encrypted_keypair(Some(password.clone()))?;
             let stored = keys.sk.to_box(Some("museum signing key"))?;
             let signing_key = minisign::SecretKey::from_box(stored.clone(), Some(password))?;
-            let mut key_file = create_new(&config.secret_key, 0o600)?;
+            let mut key_file = create_new(&args.secret_key, 0o600)?;
             let initialised: Result<_, Box<dyn Error>> = async {
                 let config_file = create_new(&cli.config, 0o644)?;
                 let uploads = registry.init(&signing_key).await.inspect_err(|_| {
@@ -213,7 +214,7 @@ async fn run<X: ReleaseIndex>(
             }
             .await;
             let (uploads, mut config_file) = initialised.inspect_err(|_| {
-                let _ = std::fs::remove_file(&config.secret_key);
+                let _ = std::fs::remove_file(&args.secret_key);
             })?;
             key_file.write_all(stored.into_string().as_bytes())?;
             config.public_keys.push(keys.pk.to_base64());
@@ -224,11 +225,11 @@ async fn run<X: ReleaseIndex>(
             println!(
                 "wrote {} and {}",
                 cli.config.display(),
-                config.secret_key.display()
+                args.secret_key.display()
             );
         }
         Command::Publish(args) => {
-            let secret_key = minisign::SecretKey::from_file(&config.secret_key, password)?;
+            let secret_key = minisign::SecretKey::from_file(&args.secret_key, password)?;
             let release = NewRelease {
                 package: &args.package,
                 version: args.version.clone(),

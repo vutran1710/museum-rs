@@ -126,19 +126,19 @@ museum init --registry https://github.com/acme/plugins --index index.yaml --pref
   # add --index-branch main to commit the index to the repository instead of the `index` release
 
 # every release
+export MUSEUM_SECRET_KEY=~/.config/museum/acme-plugins.key   # or --secret-key
 museum publish --package modbus --version 0.4.2 --interface 2 \
   --file x86_64-unknown-linux-gnu=target/x86_64-unknown-linux-gnu/release/modbus \
   --file x86_64-pc-windows-msvc=target/x86_64-pc-windows-msvc/release/modbus.exe
 ```
 
-`museum init` writes this `museum.toml`. Commit it: it holds only public information.
+`museum init` writes this `museum.toml`. Commit it: it holds only public, portable settings. Where the secret key lives is up to each machine, so `publish` takes it from `--secret-key` or `MUSEUM_SECRET_KEY`.
 
 ```toml
 registry = "https://github.com/acme/plugins"
 index = "index.yaml"
 prefix = "acme-"
 public_keys = ["RWT..."]                            # give these to your hosts
-secret_key = "/home/you/.config/museum/acme-plugins.key"   # a path, never the key
 api_url = "https://api.github.com"                  # or a GitHub Enterprise API root
 token_env = "GITHUB_TOKEN"
 # index_branch = "main"                             # index committed to the repository

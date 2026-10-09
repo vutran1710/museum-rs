@@ -25,6 +25,7 @@ fn museum(dir: &Path, args: &[&str]) -> Output {
         .args(args)
         .env("GITHUB_TOKEN", "t0ken")
         .env("MUSEUM_KEY_PASSWORD", "pw")
+        .env_remove("MUSEUM_SECRET_KEY")
         .output()
         .unwrap()
 }
@@ -149,20 +150,23 @@ fn publish_writes(index: &str, index_branch: Option<&str>) -> Vec<String> {
 }
 
 #[rstest]
-#[case::json_registry(Some("index.json"), None, Ok(()))]
-#[case::yaml_registry(Some("index.yaml"), None, Ok(()))]
-#[case::toml_registry(Some("index.toml"), None, Ok(()))]
+#[case::json_registry(Some("index.json"), None, true, Ok(()))]
+#[case::yaml_registry(Some("index.yaml"), None, true, Ok(()))]
+#[case::toml_registry(Some("index.toml"), None, true, Ok(()))]
 #[case::unknown_index_extension_refused(
     Some("index.ini"),
     None,
+    true,
     Err("index must end in .json, .yaml or .toml")
 )]
-#[case::missing_config_refused(None, None, Err("museum.toml"))]
-#[case::index_in_repo_published(Some("index.json"), Some("main"), Ok(()))]
+#[case::missing_config_refused(None, None, true, Err("museum.toml"))]
+#[case::index_in_repo_published(Some("index.json"), Some("main"), true, Ok(()))]
+#[case::missing_secret_key_refused(Some("index.json"), None, false, Err("--secret-key"))]
 #[tokio::test]
 async fn cli_publishes_from_config(
     #[case] index: Option<&str>,
     #[case] index_branch: Option<&str>,
+    #[case] with_key: bool,
     #[case] expected: Result<(), &str>,
 ) {
     let (dir, server) = (
@@ -178,7 +182,7 @@ async fn cli_publishes_from_config(
     std::fs::write(dir.path().join("hello"), b"hello").unwrap();
     if let Some(index) = index {
         let config = format!(
-            "registry = \"https://github.com/acme/plugins\"\nindex = \"{index}\"\nprefix = \"acme-\"\npublic_keys = [\"{}\"]\nsecret_key = \"museum.key\"\napi_url = \"{}\"\ntoken_env = \"GITHUB_TOKEN\"\n",
+            "registry = \"https://github.com/acme/plugins\"\nindex = \"{index}\"\nprefix = \"acme-\"\npublic_keys = [\"{}\"]\napi_url = \"{}\"\ntoken_env = \"GITHUB_TOKEN\"\n",
             keys.pk.to_base64(),
             server.uri()
         );
@@ -188,20 +192,24 @@ async fn cli_publishes_from_config(
         std::fs::write(dir.path().join("museum.toml"), config + &branch).unwrap();
     }
 
-    let output = museum(
-        dir.path(),
-        &[
-            "publish",
-            "--package",
-            "hello",
-            "--version",
-            "0.1.0",
-            "--interface",
-            "1",
-            "--file",
-            &format!("{LINUX}=hello"),
-        ],
-    );
+    let built = format!("{LINUX}=hello");
+    let mut args = vec![
+        "publish",
+        "--package",
+        "hello",
+        "--version",
+        "0.1.0",
+        "--interface",
+        "1",
+        "--file",
+        &built,
+    ];
+    args.extend(if with_key {
+        ["--secret-key", "museum.key"].as_slice()
+    } else {
+        [].as_slice()
+    });
+    let output = museum(dir.path(), &args);
 
     let outcome = refusal(&output);
     assert!(
