@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title id="title">museum</title>
+  <defs>
+    <linearGradient id="stone" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b2f6b"/>
+      <stop offset="1" stop-color="#171a3f"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f6d27a"/>
+      <stop offset="1" stop-color="#d99a2b"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#stone)"/>
+  <path d="M128 40 L212 86 H44 Z" fill="url(#gold)"/>
+  <circle cx="128" cy="70" r="11" fill="#171a3f"/>
+  <path d="M123 70 l4 4 l8 -9" fill="none" stroke="#f6d27a" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="44" y="92" width="168" height="10" rx="3" fill="url(#gold)"/>
+  <g fill="#e9ecff">
+    <rect x="58" y="110" width="20" height="82" rx="4"/>
+    <rect x="94" y="110" width="20" height="82" rx="4"/>
+    <rect x="142" y="110" width="20" height="82" rx="4"/>
+    <rect x="178" y="110" width="20" height="82" rx="4"/>
+  </g>
+  <g fill="#2b2f6b" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" font-weight="700" text-anchor="middle">
+    <text x="68" y="132">0</text><text x="68" y="150">1</text><text x="68" y="168">1</text><text x="68" y="186">0</text>
+    <text x="104" y="132">1</text><text x="104" y="150">0</text><text x="104" y="168">1</text><text x="104" y="186">1</text>
+    <text x="152" y="132">1</text><text x="152" y="150">1</text><text x="152" y="168">0</text><text x="152" y="186">1</text>
+    <text x="188" y="132">0</text><text x="188" y="150">1</text><text x="188" y="168">0</text><text x="188" y="186">0</text>
+  </g>
+  <rect x="36" y="198" width="184" height="12" rx="3" fill="url(#gold)"/>
+  <rect x="28" y="212" width="200" height="10" rx="3" fill="#d99a2b"/>
+</svg>

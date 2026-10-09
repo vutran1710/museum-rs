@@ -1,0 +1,71 @@
+[package]
+name = "museum"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Fetch and publish signed, per-target executables from a registry"
+repository = "https://github.com/vutran1710/museum-rs"
+readme = "README.md"
+keywords = ["registry", "plugins", "minisign", "semver", "github-releases"]
+categories = ["development-tools", "filesystem"]
+license = "MIT OR Apache-2.0"
+
+[features]
+default = ["github", "json"]
+json = ["dep:serde", "dep:serde_json", "semver/serde"]
+yaml = ["dep:serde", "dep:serde_yaml_ng", "semver/serde"]
+toml = ["dep:serde", "dep:toml", "semver/serde"]
+github = ["dep:reqwest", "dep:serde", "dep:serde_json"]
+
+[dependencies]
+# typed public errors
+thiserror = "2"
+# versions and ranges are semver
+semver = "1"
+# async file I/O and the session lock / once-loaded index
+tokio = { version = "1", features = ["fs", "io-util", "sync"] }
+# Stream for store byte streams, join_all for fetch_all
+futures-util = "0.3"
+# chunk type of store byte streams
+bytes = "1"
+# artifact digests
+sha2 = "0.10"
+# verifying the index signature
+minisign-verify = "0.2"
+# signing the index when publishing
+minisign = "0.7"
+# the built-in index formats share one serde model; GitHub API responses
+serde = { version = "1", features = ["derive"], optional = true }
+# JsonIndex; GitHub API request bodies
+serde_json = { version = "1", optional = true }
+# YamlIndex (serde_yaml is unmaintained)
+serde_yaml_ng = { version = "0.10", optional = true }
+# TomlIndex
+toml = { version = "0.9", optional = true }
+# HTTP transport of the GitHub stores
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"], optional = true }
+
+[dev-dependencies]
+# parameterised test rows
+rstest = "0.26"
+# real local HTTP server for the GitHub stores
+wiremock = "0.6"
+# throwaway download and output directories
+tempfile = "3"
+# async test runtime and the raw TCP server
+tokio = { version = "1", features = ["full"] }
+
+[lints]
+workspace = true
+
+[workspace]
+members = [".", "cli"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+wildcard_imports = "deny"
+enum_glob_use = "deny"

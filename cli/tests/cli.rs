@@ -1,0 +1,180 @@
+//! The `museum` binary against a local server standing in for GitHub: `init` starts a registry and
+//! writes museum.toml, `publish` uploads a release driven by that config.
+
+#![allow(clippy::unwrap_used)]
+
+#[path = "../../tests/common/github.rs"]
+mod github;
+
+use std::path::Path;
+use std::process::Command;
+use std::process::Output;
+
+use github::Answer;
+use github::Release;
+use github::fake_github;
+use github::writes;
+use rstest::rstest;
+use tempfile::TempDir;
+
+const LINUX: &str = "x86_64-unknown-linux-gnu";
+
+fn museum(dir: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_museum"))
+        .current_dir(dir)
+        .args(args)
+        .env("GITHUB_TOKEN", "t0ken")
+        .env("MUSEUM_KEY_PASSWORD", "pw")
+        .output()
+        .unwrap()
+}
+
+fn refusal(output: &Output) -> Result<(), String> {
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).into_owned())
+    }
+}
+
+const FRESH: &[Release<'_>] = &[];
+const INITIALISED: &[Release<'_>] = &[("index", &[("index.json", b"{}")])];
+
+#[rstest]
+#[case::fresh_repository_initialised(FRESH, false, Ok(()), &["POST /repos/acme/plugins/releases", "POST /upload/index?name=index.json", "POST /upload/index?name=index.json.minisig"])]
+#[case::initialised_repository_refused(INITIALISED, false, Err("the registry already has an index"), &[])]
+#[case::key_file_exists_refused(FRESH, true, Err("keys/museum.key"), &[])]
+#[tokio::test]
+async fn cli_init_writes_config_and_index(
+    #[case] existing: &[Release<'_>],
+    #[case] key_exists: bool,
+    #[case] expected: Result<(), &str>,
+    #[case] requests: &[&str],
+) {
+    let (dir, server) = (
+        TempDir::new().unwrap(),
+        fake_github(existing, Answer::Normal).await,
+    );
+    let api = server.uri();
+    if key_exists {
+        std::fs::create_dir_all(dir.path().join("keys")).unwrap();
+        std::fs::write(dir.path().join("keys/museum.key"), b"in use").unwrap();
+    }
+
+    let output = museum(
+        dir.path(),
+        &[
+            "init",
+            "--registry",
+            "https://github.com/acme/plugins",
+            "--api-url",
+            &api,
+            "--secret-key",
+            "keys/museum.key",
+        ],
+    );
+
+    let outcome = refusal(&output);
+    assert!(
+        outcome
+            .as_ref()
+            .err()
+            .is_none_or(|e| e.contains(expected.err().unwrap_or_default())),
+        "{outcome:?}"
+    );
+    assert_eq!(outcome.is_ok(), expected.is_ok());
+    assert_eq!(writes(&server).await, requests);
+    assert_eq!(dir.path().join("museum.toml").exists(), expected.is_ok());
+    if let Ok(config) = std::fs::read_to_string(dir.path().join("museum.toml")) {
+        assert!(config.contains("public_keys = [\"RW"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(dir.path().join("keys/museum.key"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
+}
+
+fn publish_writes(index: &str) -> Vec<String> {
+    [
+        "POST /repos/acme/plugins/releases".to_owned(),
+        format!("POST /upload/hello-v0.1.0?name=acme-hello-0.1.0-{LINUX}"),
+        "POST /repos/acme/plugins/releases".to_owned(),
+        format!("POST /upload/index?name={index}"),
+        format!("POST /upload/index?name={index}.minisig"),
+    ]
+    .to_vec()
+}
+
+#[rstest]
+#[case::json_registry(Some("index.json"), Ok(()))]
+#[case::yaml_registry(Some("index.yaml"), Ok(()))]
+#[case::toml_registry(Some("index.toml"), Ok(()))]
+#[case::unknown_index_extension_refused(
+    Some("index.ini"),
+    Err("index must end in .json, .yaml or .toml")
+)]
+#[case::missing_config_refused(None, Err("museum.toml"))]
+#[tokio::test]
+async fn cli_publishes_from_config(
+    #[case] index: Option<&str>,
+    #[case] expected: Result<(), &str>,
+) {
+    let (dir, server) = (
+        TempDir::new().unwrap(),
+        fake_github(&[], Answer::Normal).await,
+    );
+    let keys = minisign::KeyPair::generate_encrypted_keypair(Some("pw".into())).unwrap();
+    std::fs::write(
+        dir.path().join("museum.key"),
+        keys.sk.to_box(None).unwrap().into_string(),
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("hello"), b"hello").unwrap();
+    if let Some(index) = index {
+        let config = format!(
+            "registry = \"https://github.com/acme/plugins\"\nindex = \"{index}\"\nprefix = \"acme-\"\npublic_keys = [\"{}\"]\nsecret_key = \"museum.key\"\napi_url = \"{}\"\ntoken_env = \"GITHUB_TOKEN\"\n",
+            keys.pk.to_base64(),
+            server.uri()
+        );
+        std::fs::write(dir.path().join("museum.toml"), config).unwrap();
+    }
+
+    let output = museum(
+        dir.path(),
+        &[
+            "publish",
+            "--package",
+            "hello",
+            "--version",
+            "0.1.0",
+            "--interface",
+            "1",
+            "--file",
+            &format!("{LINUX}=hello"),
+        ],
+    );
+
+    let outcome = refusal(&output);
+    assert!(
+        outcome
+            .as_ref()
+            .err()
+            .is_none_or(|e| e.contains(expected.err().unwrap_or_default())),
+        "{outcome:?}"
+    );
+    assert_eq!(outcome.is_ok(), expected.is_ok());
+    let expected_writes = if expected.is_ok() {
+        publish_writes(index.unwrap())
+    } else {
+        Vec::new()
+    };
+    assert_eq!(writes(&server).await, expected_writes);
+}
