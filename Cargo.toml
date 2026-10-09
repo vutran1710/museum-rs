@@ -15,7 +15,7 @@ default = ["github", "json"]
 json = ["dep:serde", "dep:serde_json", "semver/serde"]
 yaml = ["dep:serde", "dep:serde_yaml_ng", "semver/serde"]
 toml = ["dep:serde", "dep:toml", "semver/serde"]
-github = ["dep:reqwest", "dep:serde", "dep:serde_json", "dep:base64"]
+github = ["dep:serde", "dep:serde_json", "dep:base64"]
 
 [dependencies]
 # typed public errors
@@ -28,6 +28,8 @@ tokio = { version = "1", features = ["fs", "io-util", "sync"] }
 futures-util = "0.3"
 # chunk type of store byte streams
 bytes = "1"
+# header types of `museum::headers`, shared by every HTTP store
+http = "1"
 # artifact digests
 sha2 = "0.10"
 # the built-in index formats share one serde model; GitHub API responses
@@ -40,8 +42,8 @@ serde_yaml_ng = { version = "0.10", optional = true }
 toml = { version = "0.9", optional = true }
 # file contents in GitHub's contents API (GithubFile)
 base64 = { version = "0.22", optional = true }
-# HTTP transport of the GitHub stores and index places
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"], optional = true }
+# HTTP transport shared by every built-in store
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 
 [dev-dependencies]
 # parameterised test rows

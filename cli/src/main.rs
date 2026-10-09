@@ -27,10 +27,7 @@ use museum::github::GITHUB_API;
 use museum::github::GITHUB_RAW;
 use museum::github::Github;
 use museum::github::GithubConfig;
-use museum::github::reqwest;
-use museum::github::reqwest::header::AUTHORIZATION;
-use museum::github::reqwest::header::HeaderMap;
-use museum::github::reqwest::header::HeaderValue;
+use museum::headers;
 
 #[derive(Parser)]
 #[command(name = "museum", version, about)]
@@ -121,19 +118,11 @@ async fn museum_cli(cli: Cli) -> Result<(), Box<dyn Error>> {
         }
     };
     let GithubConfig { owner, repo, .. } = &config.registry;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(300))
-        .build()?;
     let token = std::env::var(&config.token_env)
         .map_err(|_| format!("set {} to a GitHub token", config.token_env))?;
-    let headers = HeaderMap::from_iter([(
-        AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {token}"))?,
-    )]);
     let gh = Github::new(&format!("{owner}/{repo}"))?
-        .headers(headers)
-        .prefix(&config.prefix)
-        .client(client);
+        .headers(headers::bearer(&token)?)
+        .prefix(&config.prefix);
     let gh = gh.enterprise(GITHUB, &config.api_url, GITHUB_RAW);
     match config.index_branch.clone() {
         None => {

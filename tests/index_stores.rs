@@ -10,12 +10,11 @@ use std::time::Duration;
 
 use common::github::Answer;
 use common::github::fake_github;
+use museum::HttpFile;
 use museum::IndexError;
 use museum::IndexStore;
 use museum::LocalFile;
 use museum::github::Github;
-use museum::github::HttpFile;
-use museum::github::reqwest;
 use rstest::rstest;
 use tempfile::TempDir;
 use wiremock::Mock;
@@ -50,17 +49,11 @@ enum Served {
     ExistingCommit,
 }
 
-fn authorised() -> reqwest::header::HeaderMap {
-    let token = reqwest::header::HeaderValue::from_static("Bearer t0ken");
-    reqwest::header::HeaderMap::from_iter([(reqwest::header::AUTHORIZATION, token)])
+fn authorised() -> museum::headers::HeaderMap {
+    museum::headers::bearer("t0ken").unwrap()
 }
 
-fn client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap()
-}
+const TIMEOUT: Duration = Duration::from_secs(5);
 
 async fn serve(server: &MockServer, served: Served) {
     let raw = || header("accept", "application/vnd.github.raw");
@@ -150,8 +143,8 @@ async fn commits(server: &MockServer) -> Vec<String> {
 #[case::github_file_read_raw(Place::RepoRaw, Op::Read, Served::Index, Ok("{}"), &[])]
 #[case::github_file_read_with_token(Place::RepoToken, Op::Read, Served::Index, Ok("{}"), &[])]
 #[case::github_file_committed_over_existing(Place::RepoToken, Op::Write, Served::ExistingCommit, Ok("main:registry/index.json"), &["registry/index.json sha=abc"])]
-#[case::github_file_without_authorization_is_read_only(Place::RepoRaw, Op::Write, Served::Nothing, Err(("ReadOnly", false)), &[])]
-#[case::github_file_missing_is_not_found(Place::RepoRaw, Op::Read, Served::Nothing, Err(("Refused { status: 404", true)), &[])]
+#[case::github_file_without_authorization_is_read_only(Place::RepoRaw, Op::Write, Served::Nothing, Err(("Http(ReadOnly", false)), &[])]
+#[case::github_file_missing_is_not_found(Place::RepoRaw, Op::Read, Served::Nothing, Err(("Http(Refused { status: 404", true)), &[])]
 #[tokio::test]
 async fn index_stores_read_and_write(
     #[case] place: Place,
@@ -168,12 +161,12 @@ async fn index_stores_read_and_write(
     let uri = server.uri();
     let public = Github::new("acme/plugins")
         .unwrap()
-        .client(client())
+        .timeout(TIMEOUT)
         .enterprise(&uri, &uri, &uri);
     let private = Github::new("acme/plugins")
         .unwrap()
         .headers(authorised())
-        .client(client())
+        .timeout(TIMEOUT)
         .enterprise(&uri, &uri, &uri);
 
     let outcome = match place {
@@ -186,7 +179,7 @@ async fn index_stores_read_and_write(
         }
         Place::Http => {
             exercise(
-                HttpFile::new(client(), &format!("{uri}/reg/index.json")),
+                HttpFile::new(&format!("{uri}/reg/index.json")).timeout(TIMEOUT),
                 op,
             )
             .await

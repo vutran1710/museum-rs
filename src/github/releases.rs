@@ -7,22 +7,24 @@ use std::sync::Mutex;
 use std::sync::MutexGuard;
 use std::sync::PoisonError;
 
+use futures_util::TryStreamExt;
 use reqwest::RequestBuilder;
 use reqwest::header::CONTENT_TYPE;
 use reqwest::header::LINK;
 
 use crate::github::GithubError;
-use crate::github::bytes;
 use crate::github::handle::Github;
 use crate::github::location;
-use crate::github::send;
-use crate::github::stream;
 use crate::index::store::IndexStore;
 use crate::store::Artifact;
 use crate::store::ByteStream;
 use crate::store::Location;
 use crate::store::Store;
 use crate::store::StoreWriter;
+use crate::transport::HttpError;
+use crate::transport::bytes;
+use crate::transport::send;
+use crate::transport::stream;
 
 const JSON: &str = "application/vnd.github+json";
 const OCTETS: &str = "application/octet-stream";
@@ -129,9 +131,11 @@ impl Store for GithubReleases {
                 .headers()
                 .get(LINK)
                 .and_then(|link| next_page(link.to_str().ok()?));
-            let unreachable = |source| GithubError::Unreachable {
-                url: url.clone(),
-                source,
+            let unreachable = |source| {
+                GithubError::from(HttpError::Unreachable {
+                    url: url.clone(),
+                    source,
+                })
             };
             for release in response
                 .json::<Vec<ApiRelease>>()
@@ -150,7 +154,9 @@ impl Store for GithubReleases {
         artifact: Artifact<'_>,
     ) -> Result<ByteStream<GithubError>, GithubError> {
         let (url, request) = self.get(session, self.location(artifact))?;
-        Ok(stream(send(request, &url).await?, &url))
+        Ok(Box::pin(
+            stream(send(request, &url).await?, &url).map_err(GithubError::Http),
+        ))
     }
 
     fn location(&self, artifact: Artifact<'_>) -> Location {
@@ -166,9 +172,10 @@ impl StoreWriter for GithubReleases {
         bytes: Vec<u8>,
     ) -> Result<(), GithubError> {
         if !session.authorised {
-            return Err(GithubError::ReadOnly {
+            return Err(HttpError::ReadOnly {
                 place: self.github.download_root(),
-            });
+            }
+            .into());
         }
         let (client, json) = (&self.github.client, self.github.accepting(JSON));
         let existing = lock(&session.assets).remove(location);
@@ -187,9 +194,11 @@ impl StoreWriter for GithubReleases {
                     &releases_url,
                 )
                 .await?;
-                let unreachable = |source| GithubError::Unreachable {
-                    url: releases_url.clone(),
-                    source,
+                let unreachable = |source| {
+                    GithubError::from(HttpError::Unreachable {
+                        url: releases_url.clone(),
+                        source,
+                    })
                 };
                 Self::remember(session, created.json().await.map_err(unreachable)?)
             }
@@ -200,9 +209,11 @@ impl StoreWriter for GithubReleases {
             .header(CONTENT_TYPE, OCTETS)
             .query(&[("name", &location.file)]);
         let uploaded = send(request.body(bytes), &upload_url).await?;
-        let unreachable = |source| GithubError::Unreachable {
-            url: upload_url.clone(),
-            source,
+        let unreachable = |source| {
+            GithubError::from(HttpError::Unreachable {
+                url: upload_url.clone(),
+                source,
+            })
         };
         let asset: ApiAsset = uploaded.json().await.map_err(unreachable)?;
         lock(&session.assets).insert(location.clone(), asset.url);
@@ -235,7 +246,7 @@ impl IndexStore for GithubReleaseFile {
     async fn read(&self) -> Result<Vec<u8>, GithubError> {
         let session = self.releases.bootstrap().await?;
         let (url, request) = self.releases.get(&session, self.index.clone())?;
-        bytes(request, &url).await
+        Ok(bytes(request, &url).await?)
     }
 
     async fn write(&self, index: Vec<u8>) -> Result<String, GithubError> {

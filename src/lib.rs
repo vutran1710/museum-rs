@@ -3,11 +3,13 @@
 //! where the index file lives, and a `ReleaseIndex` what that file looks like.
 
 mod error;
+pub mod headers;
 mod index;
 mod publish;
 mod registry;
 mod resolve;
 mod store;
+mod transport;
 
 #[cfg(feature = "github")]
 pub mod github;
@@ -44,6 +46,8 @@ pub use store::Location;
 pub use store::Store;
 pub use store::StoreError;
 pub use store::StoreWriter;
+pub use transport::HttpError;
+pub use transport::HttpFile;
 
 /// Cargo's target triple of the host this library was built for.
 pub const HOST_TARGET: &str = env!("HOST_TARGET");

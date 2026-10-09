@@ -796,6 +796,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "futures-util",
+ "http",
  "reqwest",
  "rstest",
  "semver",

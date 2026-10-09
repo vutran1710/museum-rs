@@ -21,7 +21,6 @@ use museum::StoreWriter;
 use museum::Version;
 use museum::github::Github;
 use museum::github::GithubError;
-use museum::github::reqwest;
 use rstest::rstest;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
@@ -33,17 +32,11 @@ use wiremock::matchers::header;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
-fn authorised() -> reqwest::header::HeaderMap {
-    let token = reqwest::header::HeaderValue::from_static("Bearer t0ken");
-    reqwest::header::HeaderMap::from_iter([(reqwest::header::AUTHORIZATION, token)])
+fn authorised() -> museum::headers::HeaderMap {
+    museum::headers::bearer("t0ken").unwrap()
 }
 
-fn client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap()
-}
+const TIMEOUT: Duration = Duration::from_secs(5);
 const ARTIFACT_PATH: &str =
     "/acme/plugins/releases/download/modbus-v0.4.2/acme-modbus-0.4.2-x86_64-unknown-linux-gnu";
 
@@ -92,9 +85,9 @@ fn artifact(version: &Version) -> Artifact<'_> {
 
 #[rstest]
 #[case::artifact_served(Server::Serving, Ok(b"binary".to_vec()), false)]
-#[case::refused_404_is_not_found(Server::Empty, Err("Refused { status: 404"), true)]
-#[case::unreachable(Server::Down, Err("Unreachable"), false)]
-#[case::body_cut_short_is_an_error(Server::CutShort, Err("Unreachable"), false)]
+#[case::refused_404_is_not_found(Server::Empty, Err("Http(Refused { status: 404"), true)]
+#[case::unreachable(Server::Down, Err("Http(Unreachable"), false)]
+#[case::body_cut_short_is_an_error(Server::CutShort, Err("Http(Unreachable"), false)]
 #[tokio::test]
 async fn public_releases_serve_artifacts(
     #[case] server: Server,
@@ -118,7 +111,7 @@ async fn public_releases_serve_artifacts(
     };
     let store = Github::new("acme/plugins")
         .unwrap()
-        .client(client())
+        .timeout(TIMEOUT)
         .enterprise(&base, &base, &base)
         .prefix("acme-")
         .releases();
@@ -177,7 +170,12 @@ async fn private_api(status: u16) -> MockServer {
 #[case::assets_resolved_through_api(200, Wanted::OnFirstPage, Ok(b"first".to_vec()), false)]
 #[case::releases_listed_across_pages(200, Wanted::Artifact, Ok(b"binary".to_vec()), false)]
 #[case::token_sent_on_every_request(200, Wanted::Artifact, Ok(b"binary".to_vec()), false)]
-#[case::refused_401_is_unauthorized(401, Wanted::OnFirstPage, Err("Refused { status: 401"), true)]
+#[case::refused_401_is_unauthorized(
+    401,
+    Wanted::OnFirstPage,
+    Err("Http(Refused { status: 401"),
+    true
+)]
 #[case::unpublished_asset_is_not_found(200, Wanted::Unpublished, Err("MissingAsset"), false)]
 #[tokio::test]
 async fn private_releases_serve_artifacts(
@@ -191,7 +189,7 @@ async fn private_releases_serve_artifacts(
     let store = Github::new("acme/plugins")
         .unwrap()
         .headers(authorised())
-        .client(client())
+        .timeout(TIMEOUT)
         .enterprise(&uri, &uri, &uri)
         .prefix("acme-")
         .releases();
@@ -241,11 +239,11 @@ const RELEASE_WITH_ASSET: &[Release<'_>] = &[(
 #[case::asset_uploaded_to_existing_release(RELEASE_WITHOUT_ASSETS, Answer::Normal, false, Ok(()), &[UPLOAD])]
 #[case::release_created_when_missing(&[], Answer::Normal, false, Ok(()), &[CREATE, UPLOAD])]
 #[case::existing_asset_replaced(RELEASE_WITH_ASSET, Answer::Normal, false, Ok(()), &[DELETE, UPLOAD])]
-#[case::refused_403_is_unauthorized(RELEASE_WITHOUT_ASSETS, Answer::UploadRefused(403), false, Err("Refused { status: 403"), &[UPLOAD])]
-#[case::malformed_listing_is_an_error(RELEASE_WITHOUT_ASSETS, Answer::MalformedListing, false, Err("Unreachable"), &[])]
-#[case::malformed_created_release_is_an_error(&[], Answer::MalformedRelease, false, Err("Unreachable"), &[CREATE])]
-#[case::anonymous_upload_is_read_only(RELEASE_WITHOUT_ASSETS, Answer::Normal, true, Err("ReadOnly"), &[])]
-#[case::malformed_upload_answer_is_an_error(RELEASE_WITHOUT_ASSETS, Answer::MalformedUpload, false, Err("Unreachable"), &[UPLOAD])]
+#[case::refused_403_is_unauthorized(RELEASE_WITHOUT_ASSETS, Answer::UploadRefused(403), false, Err("Http(Refused { status: 403"), &[UPLOAD])]
+#[case::malformed_listing_is_an_error(RELEASE_WITHOUT_ASSETS, Answer::MalformedListing, false, Err("Http(Unreachable"), &[])]
+#[case::malformed_created_release_is_an_error(&[], Answer::MalformedRelease, false, Err("Http(Unreachable"), &[CREATE])]
+#[case::anonymous_upload_is_read_only(RELEASE_WITHOUT_ASSETS, Answer::Normal, true, Err("Http(ReadOnly"), &[])]
+#[case::malformed_upload_answer_is_an_error(RELEASE_WITHOUT_ASSETS, Answer::MalformedUpload, false, Err("Http(Unreachable"), &[UPLOAD])]
 #[tokio::test]
 async fn releases_upload(
     #[case] existing: &[Release<'_>],
@@ -263,7 +261,7 @@ async fn releases_upload(
         private
     };
     let store = github
-        .client(client())
+        .timeout(TIMEOUT)
         .enterprise(&uri, &uri, &uri)
         .releases();
     let location = store.location(artifact(&Version::new(0, 4, 2)));

@@ -10,7 +10,6 @@ use museum::Registry;
 use museum::VersionReq;
 use museum::Yaml;
 use museum::github::Github;
-use museum::github::reqwest;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -19,12 +18,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .as_str()
         .ok_or("museum.toml has no prefix")?;
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()?;
     let gh = Github::new("vutran1710/museum-rs")?
         .prefix(prefix)
-        .client(client);
+        .timeout(Duration::from_secs(30));
     let index = Yaml::new(gh.release_file("index/index.yaml")?);
     let options = Options {
         download_dir: "target/museum/yaml".into(),

@@ -2,8 +2,12 @@
 //! header makes private repositories readable and uploads possible). It hands out the executables
 //! store and the index stores for files in that repository.
 
-use reqwest::header::AUTHORIZATION;
-use reqwest::header::HeaderMap;
+use std::time::Duration;
+
+use crate::headers::ACCEPT;
+use crate::headers::AUTHORIZATION;
+use crate::headers::HeaderMap;
+use crate::headers::HeaderValue;
 
 use crate::github::GITHUB;
 use crate::github::GITHUB_API;
@@ -14,11 +18,12 @@ use crate::github::address::RepoAddress;
 use crate::github::files::GithubFile;
 use crate::github::releases::GithubReleaseFile;
 use crate::github::releases::GithubReleases;
+use crate::transport::Http;
 
 #[derive(Clone, Debug)]
 pub struct Github {
     repo: RepoAddress,
-    pub(crate) client: reqwest::Client,
+    pub(crate) client: Http,
     pub(crate) headers: HeaderMap,
     pub(crate) prefix: String,
     web: String,
@@ -31,7 +36,7 @@ impl Github {
     pub fn new(repo: &str) -> Result<Self, GithubError> {
         Ok(Self {
             repo: repo.parse()?,
-            client: reqwest::Client::new(),
+            client: Http::new(),
             headers: HeaderMap::new(),
             prefix: String::new(),
             web: GITHUB.to_owned(),
@@ -55,9 +60,12 @@ impl Github {
         }
     }
 
-    /// Replace the default client, e.g. to set a timeout or a proxy.
-    pub fn client(self, client: reqwest::Client) -> Self {
-        Self { client, ..self }
+    /// How long one request may take, from connecting to the last byte. 300 seconds by default.
+    pub fn timeout(self, timeout: Duration) -> Self {
+        Self {
+            client: self.client.with_timeout(timeout),
+            ..self
+        }
     }
 
     /// GitHub Enterprise: replace the github.com web, API and raw roots.
@@ -97,10 +105,7 @@ impl Github {
     /// The configured headers plus `Accept`.
     pub(crate) fn accepting(&self, accept: &'static str) -> HeaderMap {
         let mut headers = self.headers.clone();
-        headers.insert(
-            reqwest::header::ACCEPT,
-            reqwest::header::HeaderValue::from_static(accept),
-        );
+        headers.insert(ACCEPT, HeaderValue::from_static(accept));
         headers
     }
 

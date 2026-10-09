@@ -96,7 +96,10 @@ change an executable and its digest together. That is the store's access control
 
 ## 7. GitHub
 
-`Github::new("owner/repo")?` reads anonymously; `.headers(..)` adds headers sent with every request.
+`Github::new("owner/repo")?` reads anonymously; `.headers(..)` adds headers sent with every request
+(`museum::headers::bearer(token)` builds `Authorization: Bearer <token>`), and `.timeout(..)` bounds
+each request (300 s by default). The HTTP client is created implicitly and shared by every built-in
+HTTP store; transport failures are one `HttpError` that store errors wrap.
 With an `Authorization` header, release assets are read through the API (private repositories need
 this), and uploads and commits become possible. From one handle:
 

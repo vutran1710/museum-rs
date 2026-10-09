@@ -40,7 +40,15 @@ for (package, fetched) in registry.fetch_all(&wanted, HOST_TARGET, 2).await {
 }
 ```
 
-A public registry needs nothing else. For a private one, pass the header GitHub expects: `Github::new(..)?.headers(..)` with `Authorization: Bearer <token>`.
+A public registry needs nothing else. For a private one, add the header GitHub expects; museum builds the HTTP client itself:
+
+```rust
+use museum::headers;
+
+let gh = Github::new("acme/private-plugins")?
+    .headers(headers::bearer(&std::env::var("GITHUB_TOKEN")?)?)
+    .timeout(Duration::from_secs(30));   // per request; 300 s by default
+```
 
 ## Publish, from your pipeline
 

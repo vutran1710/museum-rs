@@ -1,6 +1,6 @@
 //! GitHub as a registry: `Github` is one repository and how it is reached; it hands out the
-//! executables store (`releases`) and index stores (`files`). `HttpFile` reads an index from any
-//! URL. Shared here: the registry string, the artifact layout, and the HTTP error.
+//! executables store (`releases`) and index stores (`files`). Shared here: the registry string, the
+//! artifact layout, and `GithubError`. HTTP itself lives in `transport`.
 
 mod address;
 mod files;
@@ -10,32 +10,23 @@ mod releases;
 use std::fmt;
 use std::str::FromStr;
 
-use futures_util::StreamExt;
-use futures_util::TryStreamExt;
-
 pub use address::FileAddress;
 pub use address::RepoAddress;
 pub use files::GithubFile;
-pub use files::HttpFile;
 pub use handle::Github;
 pub use releases::GithubReleaseFile;
 pub use releases::GithubReleases;
 pub use releases::ReleasesSession;
-pub use reqwest;
-use reqwest::RequestBuilder;
-use reqwest::Response;
-use reqwest::header::USER_AGENT;
 
 use crate::index::IndexError;
 use crate::store::Artifact;
 use crate::store::Location;
 use crate::store::StoreError;
+use crate::transport::HttpError;
 
 pub const GITHUB: &str = "https://github.com";
 pub const GITHUB_API: &str = "https://api.github.com";
 pub const GITHUB_RAW: &str = "https://raw.githubusercontent.com";
-const AGENT: &str = concat!("museum/", env!("CARGO_PKG_VERSION"));
-
 /// A registry written as one string: `https://github.com/<org>/<repo>[?token_env=<VAR>]`.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -115,14 +106,10 @@ impl From<GithubConfig> for String {
 
 #[derive(Debug, thiserror::Error)]
 pub enum GithubError {
-    #[error("could not reach {url}: {source}")]
-    Unreachable { url: String, source: reqwest::Error },
-    #[error("{url} answered {status}")]
-    Refused { status: u16, url: String },
+    #[error(transparent)]
+    Http(#[from] HttpError),
     #[error("no release asset {location}")]
     MissingAsset { location: Location },
-    #[error("{place} is read-only")]
-    ReadOnly { place: String },
     #[error("'{address}' is not a GitHub address; expected {expected}")]
     BadAddress { address: String, expected: String },
 }
@@ -135,19 +122,10 @@ impl IndexError for GithubError {
 
 impl StoreError for GithubError {
     fn unauthorized(&self) -> bool {
-        matches!(
-            self,
-            Self::Refused {
-                status: 401 | 403,
-                ..
-            }
-        )
+        matches!(self, Self::Http(e) if e.unauthorized())
     }
     fn not_found(&self) -> bool {
-        matches!(
-            self,
-            Self::Refused { status: 404, .. } | Self::MissingAsset { .. }
-        )
+        matches!(self, Self::Http(e) if e.not_found()) || matches!(self, Self::MissingAsset { .. })
     }
 }
 
@@ -166,51 +144,4 @@ pub(crate) fn location(prefix: &str, artifact: Artifact<'_>) -> Location {
         group: format!("{package}-v{version}"),
         file: format!("{prefix}{package}-{version}-{target}{exe}"),
     }
-}
-
-pub(crate) async fn bytes(request: RequestBuilder, url: &str) -> Result<Vec<u8>, GithubError> {
-    let chunks = stream(send(request, url).await?, url);
-    chunks
-        .try_fold(Vec::new(), |mut all, chunk| async move {
-            all.extend_from_slice(&chunk);
-            Ok(all)
-        })
-        .await
-}
-
-/// A file that does not exist is `None`; any other failure stays an error.
-pub(crate) fn optional(read: Result<Vec<u8>, GithubError>) -> Result<Option<Vec<u8>>, GithubError> {
-    match read {
-        Err(e) if StoreError::not_found(&e) => Ok(None),
-        read => read.map(Some),
-    }
-}
-
-pub(crate) async fn send(request: RequestBuilder, url: &str) -> Result<Response, GithubError> {
-    let unreachable = |source| GithubError::Unreachable {
-        url: url.to_owned(),
-        source,
-    };
-    let response = request
-        .header(USER_AGENT, AGENT)
-        .send()
-        .await
-        .map_err(unreachable)?;
-    match response.status() {
-        status if status.is_success() => Ok(response),
-        status => Err(GithubError::Refused {
-            status: status.as_u16(),
-            url: url.to_owned(),
-        }),
-    }
-}
-
-pub(crate) fn stream(response: Response, url: &str) -> crate::store::ByteStream<GithubError> {
-    let url = url.to_owned();
-    Box::pin(response.bytes_stream().map(move |chunk| {
-        chunk.map_err(|source| GithubError::Unreachable {
-            url: url.clone(),
-            source,
-        })
-    }))
 }
