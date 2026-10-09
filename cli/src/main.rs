@@ -132,13 +132,29 @@ async fn museum_cli(cli: Cli) -> Result<(), Box<dyn Error>> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(300))
         .build()?;
-    let gh = Github::private(owner, repo, &config.token_env)
+    let gh = Github::private(&format!("{owner}/{repo}"), &config.token_env)?
         .prefix(&config.prefix)
         .client(client);
     let gh = gh.enterprise(GITHUB, &config.api_url, GITHUB_RAW);
     match config.index_branch.clone() {
-        None => with_format(&gh, gh.release_file("index", &config.index), config, &cli).await,
-        Some(branch) => with_format(&gh, gh.file(&branch, &config.index), config, &cli).await,
+        None => {
+            with_format(
+                &gh,
+                gh.release_file(&format!("index/{}", config.index))?,
+                config,
+                &cli,
+            )
+            .await
+        }
+        Some(branch) => {
+            with_format(
+                &gh,
+                gh.file(&format!("{branch}/{}", config.index))?,
+                config,
+                &cli,
+            )
+            .await
+        }
     }
 }
 

@@ -111,7 +111,8 @@ async fn public_releases_serve_artifacts(
         Server::Down => "http://127.0.0.1:9".to_owned(),
         Server::CutShort => cut_short_server().await,
     };
-    let store = Github::public("acme", "plugins")
+    let store = Github::public("acme/plugins")
+        .unwrap()
         .client(client())
         .enterprise(&base, &base, &base)
         .prefix("acme-")
@@ -202,7 +203,8 @@ async fn private_releases_serve_artifacts(
 ) {
     let server = private_api(status).await;
     let uri = server.uri();
-    let store = Github::private("acme", "plugins", token_env)
+    let store = Github::private("acme/plugins", token_env)
+        .unwrap()
         .client(client())
         .enterprise(&uri, &uri, &uri)
         .prefix("acme-")
@@ -268,9 +270,9 @@ async fn releases_upload(
 ) {
     let server = fake_github(existing, given).await;
     let uri = server.uri();
-    let private = Github::private("acme", "plugins", "REGISTRY_TEST_TOKEN");
+    let private = Github::private("acme/plugins", "REGISTRY_TEST_TOKEN").unwrap();
     let github = if anonymous {
-        Github::public("acme", "plugins")
+        Github::public("acme/plugins").unwrap()
     } else {
         private
     };

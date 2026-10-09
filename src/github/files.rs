@@ -10,6 +10,7 @@ use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 
 use crate::github::GithubError;
+use crate::github::address::FileAddress;
 use crate::github::bearer;
 use crate::github::bytes;
 use crate::github::handle::Github;
@@ -18,14 +19,13 @@ use crate::github::send;
 use crate::index::Signed;
 use crate::index::store::IndexStore;
 
-/// An index committed at `path` on `branch`, next to `<path>.minisig`. Reads go to the raw file, or
-/// through the contents API with the repository's token; commits always need a token (the
+/// An index committed at `<ref>/<path>`, next to `<path>.minisig`. Reads go to the raw
+/// file, or through the contents API with the repository's token; commits always need a token (the
 /// repository's, else `GITHUB_TOKEN`).
 #[derive(Clone, Debug)]
 pub struct GithubFile {
     github: Github,
-    branch: String,
-    path: String,
+    address: FileAddress,
 }
 
 #[derive(serde::Deserialize)]
@@ -34,12 +34,8 @@ struct Existing {
 }
 
 impl GithubFile {
-    pub(crate) fn new(github: Github, branch: &str, path: &str) -> Self {
-        Self {
-            github,
-            branch: branch.to_owned(),
-            path: path.trim_start_matches('/').to_owned(),
-        }
+    pub(crate) fn new(github: Github, address: FileAddress) -> Self {
+        Self { github, address }
     }
 
     fn headers(token: HeaderValue, accept: &'static str) -> HeaderMap {
@@ -53,14 +49,18 @@ impl GithubFile {
         let client = &self.github.client;
         match token {
             Some(token) => {
-                let url = format!("{}/{path}?ref={}", self.github.contents_url(), self.branch);
+                let url = format!(
+                    "{}/{path}?ref={}",
+                    self.github.contents_url(),
+                    self.address.reference
+                );
                 let request = client
                     .get(&url)
                     .headers(Self::headers(token.clone(), "application/vnd.github.raw"));
                 (url, request)
             }
             None => {
-                let url = format!("{}/{path}", self.github.raw_root(&self.branch));
+                let url = format!("{}/{path}", self.github.raw_root(&self.address.reference));
                 (url.clone(), client.get(url))
             }
         }
@@ -72,9 +72,9 @@ impl IndexStore for GithubFile {
 
     async fn read(&self) -> Result<Signed, GithubError> {
         let token = self.github.token()?;
-        let (url, request) = self.get(&token, &self.path);
+        let (url, request) = self.get(&token, &self.address.path);
         let index = bytes(request, &url).await?;
-        let (url, request) = self.get(&token, &format!("{}.minisig", self.path));
+        let (url, request) = self.get(&token, &format!("{}.minisig", self.address.path));
         let signature = optional(bytes(request, &url).await)?;
         Ok(Signed { index, signature })
     }
@@ -85,26 +85,26 @@ impl IndexStore for GithubFile {
         let client = &self.github.client;
         let mut written = Vec::new();
         for (path, contents) in [
-            (self.path.clone(), signed.index),
+            (self.address.path.clone(), signed.index),
             (
-                format!("{}.minisig", self.path),
+                format!("{}.minisig", self.address.path),
                 signed.signature.unwrap_or_default(),
             ),
         ] {
             let url = format!("{}/{path}", self.github.contents_url());
             let lookup = client
-                .get(format!("{url}?ref={}", self.branch))
+                .get(format!("{url}?ref={}", self.address.reference))
                 .headers(json.clone());
             let existing = optional(bytes(lookup, &url).await)?
                 .and_then(|found| serde_json::from_slice::<Existing>(&found).ok());
             let body = serde_json::json!({
                 "message": format!("museum: update {path}"),
                 "content": STANDARD.encode(contents),
-                "branch": self.branch,
+                "branch": self.address.reference,
                 "sha": existing.map(|existing| existing.sha),
             });
             send(client.put(&url).headers(json.clone()).json(&body), &url).await?;
-            written.push(format!("{}:{path}", self.branch));
+            written.push(format!("{}:{path}", self.address.reference));
         }
         Ok(written)
     }

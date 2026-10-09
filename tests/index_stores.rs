@@ -175,10 +175,12 @@ async fn index_stores_read_and_write(
     );
     serve(&server, served).await;
     let uri = server.uri();
-    let public = Github::public("acme", "plugins")
+    let public = Github::public("acme/plugins")
+        .unwrap()
         .client(client())
         .enterprise(&uri, &uri, &uri);
-    let private = Github::private("acme", "plugins", "REGISTRY_TEST_TOKEN")
+    let private = Github::private("acme/plugins", "REGISTRY_TEST_TOKEN")
+        .unwrap()
         .client(client())
         .enterprise(&uri, &uri, &uri);
 
@@ -197,10 +199,12 @@ async fn index_stores_read_and_write(
             )
             .await
         }
-        Place::ReleasePublic => exercise(public.release_file("index", "index.json"), op).await,
-        Place::ReleaseApi => exercise(private.release_file("index", "index.json"), op).await,
-        Place::RepoRaw => exercise(public.file("main", "registry/index.json"), op).await,
-        Place::RepoToken => exercise(private.file("main", "registry/index.json"), op).await,
+        Place::ReleasePublic => {
+            exercise(public.release_file("index/index.json").unwrap(), op).await
+        }
+        Place::ReleaseApi => exercise(private.release_file("index/index.json").unwrap(), op).await,
+        Place::RepoRaw => exercise(public.file("main/registry/index.json").unwrap(), op).await,
+        Place::RepoToken => exercise(private.file("main/registry/index.json").unwrap(), op).await,
     };
 
     match (&outcome, expected) {

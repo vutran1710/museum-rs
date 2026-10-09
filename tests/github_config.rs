@@ -12,6 +12,7 @@ use museum::Artifact;
 use museum::Location;
 use museum::Store;
 use museum::Version;
+use museum::github::FileAddress;
 use museum::github::Github;
 use museum::github::GithubConfig;
 use rstest::rstest;
@@ -72,7 +73,10 @@ fn github_location_follows_layout(
     #[case] group: &str,
     #[case] file: &str,
 ) {
-    let store = Github::public("acme", "plugins").prefix(prefix).releases();
+    let store = Github::public("acme/plugins")
+        .unwrap()
+        .prefix(prefix)
+        .releases();
     let artifact = Artifact {
         package: "modbus",
         version: &Version::new(0, 4, 2),
@@ -85,4 +89,48 @@ fn github_location_follows_layout(
             file: file.into()
         }
     );
+}
+
+#[derive(Clone, Copy)]
+enum Address {
+    File,
+    Repo,
+}
+
+const NOT_A_FILE: &str = "is not a GitHub address; expected <ref>/<path>";
+
+#[rstest]
+#[case::file_address(Address::File, "main/index.json", Ok("main | index.json"))]
+#[case::nested_file_path(
+    Address::File,
+    "v1.2/registry/index.yaml",
+    Ok("v1.2 | registry/index.yaml")
+)]
+#[case::release_file_address(Address::File, "index/index.json", Ok("index | index.json"))]
+#[case::releases_address(Address::Repo, "acme/plugins", Ok("acme/plugins"))]
+#[case::file_without_path_refused(Address::File, "main", Err(NOT_A_FILE))]
+#[case::releases_with_extra_segment_refused(
+    Address::Repo,
+    "acme/plugins/x",
+    Err("is not a GitHub address; expected owner/repo")
+)]
+#[case::empty_segment_refused(Address::File, "main//index.json", Err(NOT_A_FILE))]
+fn github_addresses_parse(
+    #[case] kind: Address,
+    #[case] written: &str,
+    #[case] expected: Result<&str, &str>,
+) {
+    let parsed = match kind {
+        Address::File => written
+            .parse::<FileAddress>()
+            .map(|a| format!("{} | {}", a.reference, a.path)),
+        Address::Repo => Github::public(written).map(|_| written.to_owned()),
+    };
+    match (parsed, expected) {
+        (Ok(parsed), Ok(expected)) => assert_eq!(parsed, expected),
+        (Err(error), Err(message)) => {
+            assert_eq!(error.to_string(), format!("'{written}' {message}"))
+        }
+        (parsed, expected) => panic!("got {parsed:?}, expected {expected:?}"),
+    }
 }

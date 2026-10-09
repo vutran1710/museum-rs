@@ -79,3 +79,7 @@ required-features = ["github", "json", "toml"]
 [[example]]
 name = "fetch_yaml"
 required-features = ["github", "yaml", "toml"]
+
+[[example]]
+name = "local_registry"
+required-features = ["yaml"]

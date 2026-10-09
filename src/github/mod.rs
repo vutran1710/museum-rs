@@ -2,6 +2,7 @@
 //! executables store (`releases`) and index stores (`files`). `HttpFile` reads an index from any
 //! URL. Shared here: the registry string, the artifact layout, tokens, and the HTTP error.
 
+mod address;
 mod files;
 mod handle;
 mod releases;
@@ -12,6 +13,8 @@ use std::str::FromStr;
 use futures_util::StreamExt;
 use futures_util::TryStreamExt;
 
+pub use address::FileAddress;
+pub use address::RepoAddress;
 pub use files::GithubFile;
 pub use files::HttpFile;
 pub use handle::Github;
@@ -135,6 +138,8 @@ pub enum GithubError {
     MissingAsset { location: Location },
     #[error("{place} is read-only")]
     ReadOnly { place: String },
+    #[error("'{address}' is not a GitHub address; expected {expected}")]
+    BadAddress { address: String, expected: String },
 }
 
 impl IndexError for GithubError {

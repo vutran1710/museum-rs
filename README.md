@@ -64,7 +64,7 @@ flowchart LR
 |---|---|---|---|
 | `S` | `Store` | where the executables live and how access is obtained | `GithubReleases` |
 | `X` | `ReleaseIndex` | the format of the index file | `Json`, `Yaml`, `Toml` |
-| `X::Store` | `IndexStore` | where that one index file lives | `gh.release_file(..)`, `gh.file(..)`, `HttpFile`, `LocalFile` |
+| `X::Store` | `IndexStore` | where that one index file lives | `gh.release_file("<tag>/<name>")`, `gh.file("<ref>/<path>")`, `HttpFile`, `LocalFile` |
 
 Everything that must hold for every combination lives in the core, written once: bootstrapping access, signature checks, version resolution, hashing, the download cache and atomic installs.
 
@@ -86,8 +86,8 @@ const PUBLISHER_KEY: &str = "RW...";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let gh = Github::public("acme", "plugins").prefix("acme-");   // Github::private(owner, repo, "GITHUB_TOKEN")
-    let index = Json::new(gh.file("main", "registry/index.json"));  // or gh.release_file("index", "index.json")
+    let gh = Github::public("acme/plugins")?.prefix("acme-");   // Github::private("acme/plugins", "GITHUB_TOKEN")?
+    let index = Json::new(gh.file("main/registry/index.json")?);  // or gh.release_file("index/index.json")?
     let options = Options {
         trusted_keys: vec![PublicKey::from_base64(PUBLISHER_KEY)?],
         download_dir: "drivers".into(), // relative paths resolve against the current directory, once
@@ -113,7 +113,7 @@ What `fetch_all` does:
 3. Bootstraps the executables store once and shares the session. If the store answers "unauthorized", museum bootstraps again once and retries.
 4. Downloads each package once, in parallel, into `<package>-<version>[.exe]`, and returns typed errors you can match on.
 
-`HOST_TARGET` is Cargo's exact target triple, so `x86_64-pc-windows-msvc` and `x86_64-pc-windows-gnu` are told apart. To set a timeout or proxy, pass your own client: `Github::public(..).client(reqwest_client)`.
+`HOST_TARGET` is Cargo's exact target triple, so `x86_64-pc-windows-msvc` and `x86_64-pc-windows-gnu` are told apart. To set a timeout or proxy, pass your own client: `Github::public(..)?.client(reqwest_client)`.
 
 ## Publishing with the CLI
 
@@ -224,10 +224,12 @@ Not covered in this version: rollback protection, meaning an attacker serving an
 ## Layout on GitHub
 
 ```
-executables     release `<package>-v<version>`   asset <prefix><package>-<version>-<target>[.exe]
-index           gh.release_file(tag, name)        asset <name> + <name>.minisig of release <tag>
-                gh.file(branch, path)             <path> + <path>.minisig committed on <branch>
+executables     release `<package>-v<version>`     asset <prefix><package>-<version>-<target>[.exe]
+index           gh.release_file("<tag>/<name>")    asset <name> + <name>.minisig of release <tag>
+                gh.file("<ref>/<path>")            <path> + <path>.minisig at a branch, tag or commit
 ```
+
+The repository is given once, to `Github::public("owner/repo")` or `Github::private("owner/repo", token_env)`. In `gh.file(..)` the first segment is the ref, so a branch whose name contains `/` cannot be addressed this way.
 
 `.exe` is added when the **target** contains `windows`, so a Linux pipeline can publish Windows builds. One repository can host several registries at once as long as their index files and prefixes differ. This repository does exactly that for its examples.
 
@@ -244,20 +246,24 @@ modbus:
 
 ## Examples
 
-This repository's own releases host two example registries side by side, one with a JSON index and one with a YAML index. Each publishes the `hello` example program.
+| Example | Shows |
+|---|---|
+| [`local_registry`](examples/local_registry.rs) | The library end to end, with no network: a custom `Store` keeping executables in a folder, a `Yaml` index in a `LocalFile`, then `init`, `publish` and `fetch_all` from Rust. |
+| [`fetch_json`](examples/fetch_json.rs), [`fetch_yaml`](examples/fetch_yaml.rs) | A host reading the two example registries hosted side by side in this repository's own releases: it fetches `hello` for your platform, verifies it, and runs it. |
 
 ```sh
+cargo run --example local_registry --features yaml
 cargo run --example fetch_json --features github,json,toml
 cargo run --example fetch_yaml --features github,yaml,toml
 ```
 
-Each example fetches `hello` for your platform, verifies it, and runs it. Builds are published for macOS (`aarch64-apple-darwin`, `x86_64-apple-darwin`).
+The example registries publish `hello` for macOS only (`aarch64-apple-darwin`, `x86_64-apple-darwin`); on other platforms `fetch_*` reports that there is no build for your target.
 
 ## Features
 
 | Feature | Default | Adds |
 |---|---|---|
-| `github` | yes | `Github`, `GithubReleases`, `GithubReleaseFile`, `GithubFile`, `HttpFile`, `GithubConfig` |
+| `github` | yes | `Github`, `GithubReleases`, `GithubReleaseFile`, `GithubFile`, `HttpFile`, `GithubConfig`, `RepoAddress`, `FileAddress` |
 | `json` | yes | `Json` |
 | `yaml` | | `Yaml` |
 | `toml` | | `Toml` |

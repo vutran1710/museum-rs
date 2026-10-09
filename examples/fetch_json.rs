@@ -26,10 +26,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()?;
-    let gh = Github::public("vutran1710", "museum-rs")
+    let gh = Github::public("vutran1710/museum-rs")?
         .prefix(prefix)
         .client(client);
-    let index = Json::new(gh.release_file("index", "index.json"));
+    let index = Json::new(gh.release_file("index/index.json")?);
     let options = Options {
         trusted_keys: vec![PublicKey::from_base64(key)?],
         download_dir: "target/museum/json".into(),

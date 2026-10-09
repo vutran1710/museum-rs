@@ -26,10 +26,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()?;
-    let gh = Github::public("vutran1710", "museum-rs")
+    let gh = Github::public("vutran1710/museum-rs")?
         .prefix(prefix)
         .client(client);
-    let index = Yaml::new(gh.release_file("index", "index.yaml"));
+    let index = Yaml::new(gh.release_file("index/index.yaml")?);
     let options = Options {
         trusted_keys: vec![PublicKey::from_base64(key)?],
         download_dir: "target/museum/yaml".into(),
