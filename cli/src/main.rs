@@ -120,8 +120,7 @@ async fn museum_cli(cli: Cli) -> Result<(), Box<dyn Error>> {
             toml::from_str(&written)?
         }
     };
-    let (GithubConfig::Public { owner, repo } | GithubConfig::Private { owner, repo, .. }) =
-        &config.registry;
+    let GithubConfig { owner, repo, .. } = &config.registry;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(300))
         .build()?;

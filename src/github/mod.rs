@@ -39,16 +39,11 @@ const AGENT: &str = concat!("museum/", env!("CARGO_PKG_VERSION"));
 /// A registry written as one string: `https://github.com/<org>/<repo>[?token_env=<VAR>]`.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "String", into = "String")]
-pub enum GithubConfig {
-    Public {
-        owner: String,
-        repo: String,
-    },
-    Private {
-        owner: String,
-        repo: String,
-        token_env: String,
-    },
+pub struct GithubConfig {
+    pub owner: String,
+    pub repo: String,
+    /// The environment variable holding a token, for private registries.
+    pub token_env: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -79,16 +74,12 @@ impl FromStr for GithubConfig {
                 && s.chars()
                     .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
         };
-        match (segments.as_slice(), token_env) {
-            ([owner, repo], None) if named(owner) && named(repo) => Ok(Self::Public {
-                owner: (*owner).to_owned(),
-                repo: (*repo).to_owned(),
-            }),
-            ([owner, repo], Some(token_env)) if named(owner) && named(repo) && named(token_env) => {
-                Ok(Self::Private {
+        match segments.as_slice() {
+            [owner, repo] if named(owner) && named(repo) && token_env.is_none_or(named) => {
+                Ok(Self {
                     owner: (*owner).to_owned(),
                     repo: (*repo).to_owned(),
-                    token_env: token_env.to_owned(),
+                    token_env: token_env.map(str::to_owned),
                 })
             }
             _ => {
@@ -100,13 +91,10 @@ impl FromStr for GithubConfig {
 
 impl fmt::Display for GithubConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Public { owner, repo } => write!(f, "{GITHUB}/{owner}/{repo}"),
-            Self::Private {
-                owner,
-                repo,
-                token_env,
-            } => write!(f, "{GITHUB}/{owner}/{repo}?token_env={token_env}"),
+        write!(f, "{GITHUB}/{}/{}", self.owner, self.repo)?;
+        match &self.token_env {
+            Some(token_env) => write!(f, "?token_env={token_env}"),
+            None => Ok(()),
         }
     }
 }

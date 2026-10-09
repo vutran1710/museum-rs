@@ -17,10 +17,11 @@ use museum::github::Github;
 use museum::github::GithubConfig;
 use rstest::rstest;
 
-fn public(owner: &str, repo: &str) -> Result<GithubConfig, String> {
-    Ok(GithubConfig::Public {
+fn config(owner: &str, repo: &str, token_env: Option<&str>) -> Result<GithubConfig, String> {
+    Ok(GithubConfig {
         owner: owner.into(),
         repo: repo.into(),
+        token_env: token_env.map(str::to_owned),
     })
 }
 
@@ -28,9 +29,12 @@ const NOT_HTTPS: &str = "a registry is written https://<host>/<path>";
 const NOT_REPO: &str = "a github.com registry is https://github.com/<org>/<repository>";
 
 #[rstest]
-#[case::public("https://github.com/acme/plugins", public("acme", "plugins"))]
-#[case::trailing_slash_dropped("https://github.com/acme/plugins/", public("acme", "plugins"))]
-#[case::private("https://github.com/acme/plugins?token_env=ACME_TOKEN", Ok(GithubConfig::Private { owner: "acme".into(), repo: "plugins".into(), token_env: "ACME_TOKEN".into() }))]
+#[case::public("https://github.com/acme/plugins", config("acme", "plugins", None))]
+#[case::trailing_slash_dropped("https://github.com/acme/plugins/", config("acme", "plugins", None))]
+#[case::private(
+    "https://github.com/acme/plugins?token_env=ACME_TOKEN",
+    config("acme", "plugins", Some("ACME_TOKEN"))
+)]
 #[case::no_scheme_refused("github.com/acme/plugins", Err(NOT_HTTPS.into()))]
 #[case::plaintext_refused("http://github.com/acme/plugins", Err(NOT_HTTPS.into()))]
 #[case::other_host_refused("https://gitlab.com/acme/plugins", Err("registries are read at github.com — not at 'gitlab.com'".into()))]
