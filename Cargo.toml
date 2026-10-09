@@ -3,10 +3,10 @@ name = "museum"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Fetch and publish signed, per-target executables from a registry"
+description = "Fetch and publish per-target executables from a registry, with semver resolution and atomic installs"
 repository = "https://github.com/vutran1710/museum-rs"
 readme = "README.md"
-keywords = ["registry", "plugins", "minisign", "semver", "github-releases"]
+keywords = ["registry", "plugins", "semver", "github-releases", "download"]
 categories = ["development-tools", "filesystem"]
 license = "MIT OR Apache-2.0"
 
@@ -30,10 +30,6 @@ futures-util = "0.3"
 bytes = "1"
 # artifact digests
 sha2 = "0.10"
-# verifying the index signature
-minisign-verify = "0.2"
-# signing the index when publishing
-minisign = "0.7"
 # the built-in index formats share one serde model; GitHub API responses
 serde = { version = "1", features = ["derive"], optional = true }
 # JsonIndex; GitHub API request bodies

@@ -1,6 +1,6 @@
 //! GitHub as a registry: `Github` is one repository and how it is reached; it hands out the
 //! executables store (`releases`) and index stores (`files`). `HttpFile` reads an index from any
-//! URL. Shared here: the registry string, the artifact layout, tokens, and the HTTP error.
+//! URL. Shared here: the registry string, the artifact layout, and the HTTP error.
 
 mod address;
 mod files;
@@ -24,7 +24,6 @@ pub use releases::ReleasesSession;
 pub use reqwest;
 use reqwest::RequestBuilder;
 use reqwest::Response;
-use reqwest::header::HeaderValue;
 use reqwest::header::USER_AGENT;
 
 use crate::index::IndexError;
@@ -132,8 +131,6 @@ pub enum GithubError {
     Unreachable { url: String, source: reqwest::Error },
     #[error("{url} answered {status}")]
     Refused { status: u16, url: String },
-    #[error("environment variable {env_var} holds no token")]
-    MissingToken { env_var: String },
     #[error("no release asset {location}")]
     MissingAsset { location: Location },
     #[error("{place} is read-only")]
@@ -183,14 +180,6 @@ pub(crate) fn location(prefix: &str, artifact: Artifact<'_>) -> Location {
     }
 }
 
-pub(crate) fn bearer(token_env: &str) -> Result<HeaderValue, GithubError> {
-    let token = std::env::var(token_env).ok();
-    let header = token.and_then(|token| HeaderValue::from_str(&format!("Bearer {token}")).ok());
-    header.ok_or_else(|| GithubError::MissingToken {
-        env_var: token_env.to_owned(),
-    })
-}
-
 pub(crate) async fn bytes(request: RequestBuilder, url: &str) -> Result<Vec<u8>, GithubError> {
     let chunks = stream(send(request, url).await?, url);
     chunks
@@ -201,7 +190,7 @@ pub(crate) async fn bytes(request: RequestBuilder, url: &str) -> Result<Vec<u8>,
         .await
 }
 
-/// A missing signature is `None`, for `Registry` to refuse; any other failure stays an error.
+/// A file that does not exist is `None`; any other failure stays an error.
 pub(crate) fn optional(read: Result<Vec<u8>, GithubError>) -> Result<Option<Vec<u8>>, GithubError> {
     match read {
         Err(e) if StoreError::not_found(&e) => Ok(None),

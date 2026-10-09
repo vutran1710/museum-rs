@@ -1,6 +1,6 @@
-//! Fetch and publish signed, per-target executables from a registry. The core owns bootstrapping,
-//! signature checks, version resolution and installs; a `Store` says where bytes live and a
-//! `ReleaseIndex` says what the index file looks like.
+//! Fetch and publish per-target executables from a registry. The core owns bootstrapping, version
+//! resolution, digest checks and installs; a `Store` says where executables live, an `IndexStore`
+//! where the index file lives, and a `ReleaseIndex` what that file looks like.
 
 mod error;
 mod index;
@@ -18,7 +18,6 @@ pub use index::Digest;
 pub use index::IndexError;
 pub use index::Release;
 pub use index::ReleaseIndex;
-pub use index::Signed;
 #[cfg(feature = "json")]
 pub use index::builtin::Json;
 #[cfg(feature = "toml")]
@@ -29,8 +28,6 @@ pub use index::builtin::TomlError;
 pub use index::builtin::Yaml;
 pub use index::store::IndexStore;
 pub use index::store::LocalFile;
-pub use minisign::SecretKey;
-pub use minisign_verify::PublicKey;
 pub use publish::NewRelease;
 pub use publish::Published;
 pub use registry::Fetched;

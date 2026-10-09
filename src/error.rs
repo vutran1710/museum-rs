@@ -18,8 +18,6 @@ pub enum Error<SE, XE, IE> {
     Index(#[source] XE),
     #[error("index store: {0}")]
     IndexStore(#[source] IE),
-    #[error("index signature refused: {reason}")]
-    BadSignature { reason: String },
     #[error(transparent)]
     Unresolvable(#[from] Unresolvable),
     #[error("the registry already has an index")]
@@ -32,8 +30,6 @@ pub enum Error<SE, XE, IE> {
         expected: String,
         actual: String,
     },
-    #[error("signing the index: {0}")]
-    Sign(#[source] minisign::PError),
     #[error("{}: {source}", path.display())]
     Io {
         path: PathBuf,

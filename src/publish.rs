@@ -1,12 +1,9 @@
-//! The publishing side of `Registry`: start a registry with an empty signed index, and add a
-//! release. The index is verified first, a published version never changes, and executables are
-//! uploaded before the index that lists them.
+//! The publishing side of `Registry`: start a registry with an empty index, and add a release. A
+//! published version never changes, and executables are uploaded before the index that lists them.
 
 use std::collections::BTreeMap;
-use std::io::Cursor;
 use std::path::PathBuf;
 
-use minisign::SecretKey;
 use semver::Version;
 use sha2::Digest as _;
 use sha2::Sha256;
@@ -18,7 +15,6 @@ use crate::index::Digest;
 use crate::index::IndexError;
 use crate::index::Release;
 use crate::index::ReleaseIndex;
-use crate::index::Signed;
 use crate::index::store::IndexStore;
 use crate::registry::Registry;
 use crate::store::Artifact;
@@ -41,36 +37,28 @@ pub struct Published {
 }
 
 impl<S: Store, X: ReleaseIndex> Registry<S, X> {
-    pub async fn init(&self, secret_key: &SecretKey) -> Result<Vec<String>, RegistryError<S, X>> {
+    pub async fn init(&self) -> Result<Vec<String>, RegistryError<S, X>> {
         match self.empty.store().read().await {
-            Err(e) if e.not_found() => self.write_index(&self.empty, secret_key).await,
+            Err(e) if e.not_found() => self.write_index(&self.empty).await,
             Ok(_) => Err(Error::AlreadyInitialised),
             Err(e) => Err(Error::IndexStore(e)),
         }
     }
 
-    async fn write_index(
-        &self,
-        index: &X,
-        secret_key: &SecretKey,
-    ) -> Result<Vec<String>, RegistryError<S, X>> {
+    async fn write_index(&self, index: &X) -> Result<Vec<String>, RegistryError<S, X>> {
         let bytes = index.encode().map_err(Error::Index)?;
-        let signature = minisign::sign(None, secret_key, Cursor::new(&bytes), None, None)
-            .map_err(Error::Sign)?;
-        let signed = Signed {
-            index: bytes,
-            signature: Some(signature.to_string().into_bytes()),
-        };
-        index.store().write(signed).await.map_err(Error::IndexStore)
+        Ok(vec![
+            index
+                .store()
+                .write(bytes)
+                .await
+                .map_err(Error::IndexStore)?,
+        ])
     }
 }
 
 impl<S: StoreWriter, X: ReleaseIndex> Registry<S, X> {
-    pub async fn publish(
-        &self,
-        release: NewRelease<'_>,
-        secret_key: &SecretKey,
-    ) -> Result<Published, RegistryError<S, X>> {
+    pub async fn publish(&self, release: NewRelease<'_>) -> Result<Published, RegistryError<S, X>> {
         let NewRelease {
             package,
             version,
@@ -100,7 +88,7 @@ impl<S: StoreWriter, X: ReleaseIndex> Registry<S, X> {
         }
         let new = Release { interface, targets };
 
-        let mut index = match self.load(&self.trusted_keys).await {
+        let mut index = match self.load().await {
             Err(Error::IndexStore(e)) if e.not_found() => self.empty.clone(),
             loaded => loaded?,
         };
@@ -129,7 +117,7 @@ impl<S: StoreWriter, X: ReleaseIndex> Registry<S, X> {
             self.upload(&location, bytes).await?;
             uploads.push(location.to_string());
         }
-        uploads.extend(self.write_index(&index, secret_key).await?);
+        uploads.extend(self.write_index(&index).await?);
         Ok(Published {
             changed: true,
             uploads,

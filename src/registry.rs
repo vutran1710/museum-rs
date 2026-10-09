@@ -9,8 +9,6 @@ use std::sync::Arc;
 
 use futures_util::StreamExt;
 use futures_util::future::join_all;
-use minisign_verify::PublicKey;
-use minisign_verify::Signature;
 use semver::VersionReq;
 use sha2::Digest as _;
 use sha2::Sha256;
@@ -23,7 +21,6 @@ use crate::error::Error;
 use crate::error::RegistryError;
 use crate::error::io;
 use crate::index::ReleaseIndex;
-use crate::index::Signed;
 use crate::index::store::IndexStore;
 use crate::resolve::Build;
 use crate::resolve::resolve;
@@ -33,7 +30,6 @@ use crate::store::Store;
 use crate::store::StoreError;
 
 pub struct Options {
-    pub trusted_keys: Vec<PublicKey>,
     pub download_dir: PathBuf,
 }
 
@@ -48,7 +44,6 @@ pub struct Fetched {
 pub struct Registry<S: Store, X: ReleaseIndex> {
     pub(crate) store: S,
     pub(crate) empty: X,
-    pub(crate) trusted_keys: Vec<PublicKey>,
     download_dir: PathBuf,
     session: Mutex<Option<Arc<S::Session>>>,
     loaded: OnceCell<Arc<X>>,
@@ -61,7 +56,6 @@ impl<S: Store, X: ReleaseIndex> Registry<S, X> {
         Ok(Self {
             store,
             empty: index,
-            trusted_keys: options.trusted_keys,
             download_dir,
             session: Mutex::new(None),
             loaded: OnceCell::new(),
@@ -71,7 +65,7 @@ impl<S: Store, X: ReleaseIndex> Registry<S, X> {
     pub async fn index(&self) -> Result<Arc<X>, RegistryError<S, X>> {
         let loaded = self
             .loaded
-            .get_or_try_init(|| async { self.load(&self.trusted_keys).await.map(Arc::new) });
+            .get_or_try_init(|| async { self.load().await.map(Arc::new) });
         loaded.await.cloned()
     }
 
@@ -165,23 +159,10 @@ impl<S: Store, X: ReleaseIndex> Registry<S, X> {
         join_all(each).await.into_iter().collect()
     }
 
-    pub(crate) async fn load(&self, keys: &[PublicKey]) -> Result<X, RegistryError<S, X>> {
-        let Signed { index, signature } = IndexStore::read(self.empty.store())
+    pub(crate) async fn load(&self) -> Result<X, RegistryError<S, X>> {
+        let index = IndexStore::read(self.empty.store())
             .await
             .map_err(Error::IndexStore)?;
-        let refused = |reason: String| Error::BadSignature { reason };
-        let signature =
-            signature.ok_or_else(|| refused("the index has no signature".to_owned()))?;
-        let signature = Signature::decode(&String::from_utf8_lossy(&signature))
-            .map_err(|e| refused(e.to_string()))?;
-        if !keys
-            .iter()
-            .any(|key| key.verify(&index, &signature, false).is_ok())
-        {
-            return Err(refused(
-                "the index is not signed by a trusted key".to_owned(),
-            ));
-        }
         self.empty.decode(&index).map_err(Error::Index)
     }
 

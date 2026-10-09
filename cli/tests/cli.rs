@@ -13,43 +13,46 @@ use std::process::Output;
 use github::Answer;
 use github::Release;
 use github::fake_github;
+use github::uploads;
 use github::writes;
 use rstest::rstest;
 use tempfile::TempDir;
 
 const LINUX: &str = "x86_64-unknown-linux-gnu";
 
-fn museum(dir: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_museum"))
+fn museum(dir: &Path, args: &[&str], token: bool) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_museum"));
+    command
         .current_dir(dir)
         .args(args)
-        .env("GITHUB_TOKEN", "t0ken")
-        .env("MUSEUM_KEY_PASSWORD", "pw")
-        .env_remove("MUSEUM_SECRET_KEY")
-        .output()
-        .unwrap()
+        .env_remove("GITHUB_TOKEN");
+    if token {
+        command.env("GITHUB_TOKEN", "t0ken");
+    }
+    command.output().unwrap()
 }
 
-fn refusal(output: &Output) -> Result<(), String> {
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).into_owned())
-    }
+fn assert_refused(output: &Output, expected: Result<(), &str>) {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.success(), expected.is_ok(), "{stderr}");
+    assert!(
+        stderr.contains(expected.err().unwrap_or_default()),
+        "{stderr}"
+    );
 }
 
 const FRESH: &[Release<'_>] = &[];
 const INITIALISED: &[Release<'_>] = &[("index", &[("index.json", b"{}")])];
 
 #[rstest]
-#[case::fresh_repository_initialised(FRESH, false, None, Ok(()), &["POST /repos/acme/plugins/releases", "POST /upload/index?name=index.json", "POST /upload/index?name=index.json.minisig"])]
+#[case::fresh_repository_initialised(FRESH, false, None, Ok(()), &["POST /repos/acme/plugins/releases", "POST /upload/index?name=index.json"])]
 #[case::initialised_repository_refused(INITIALISED, false, None, Err("the registry already has an index"), &[])]
-#[case::key_file_exists_refused(FRESH, true, None, Err("keys/museum.key"), &[])]
-#[case::index_in_repo_initialised(FRESH, false, Some("main"), Ok(()), &["PUT /repos/acme/plugins/contents/index.json", "PUT /repos/acme/plugins/contents/index.json.minisig"])]
+#[case::index_in_repo_initialised(FRESH, false, Some("main"), Ok(()), &["PUT /repos/acme/plugins/contents/index.json"])]
+#[case::existing_config_refused(FRESH, true, None, Err("museum.toml"), &[])]
 #[tokio::test]
 async fn cli_init_writes_config_and_index(
     #[case] existing: &[Release<'_>],
-    #[case] key_exists: bool,
+    #[case] config_exists: bool,
     #[case] index_branch: Option<&str>,
     #[case] expected: Result<(), &str>,
     #[case] requests: &[&str],
@@ -59,19 +62,15 @@ async fn cli_init_writes_config_and_index(
         fake_github(existing, Answer::Normal).await,
     );
     let api = server.uri();
-    if key_exists {
-        std::fs::create_dir_all(dir.path().join("keys")).unwrap();
-        std::fs::write(dir.path().join("keys/museum.key"), b"in use").unwrap();
+    if config_exists {
+        std::fs::write(dir.path().join("museum.toml"), b"in use").unwrap();
     }
-
     let mut args = vec![
         "init",
         "--registry",
         "https://github.com/acme/plugins",
         "--api-url",
         &api,
-        "--secret-key",
-        "keys/museum.key",
     ];
     args.extend(
         index_branch
@@ -79,55 +78,19 @@ async fn cli_init_writes_config_and_index(
             .into_iter()
             .flatten(),
     );
-    let output = museum(dir.path(), &args);
 
-    let outcome = refusal(&output);
-    assert!(
-        outcome
-            .as_ref()
-            .err()
-            .is_none_or(|e| e.contains(expected.err().unwrap_or_default())),
-        "{outcome:?}"
-    );
-    assert_eq!(outcome.is_ok(), expected.is_ok());
+    let output = museum(dir.path(), &args, true);
+
+    assert_refused(&output, expected);
     assert_eq!(writes(&server).await, requests);
-    assert_eq!(dir.path().join("museum.toml").exists(), expected.is_ok());
-    if let Ok(config) = std::fs::read_to_string(dir.path().join("museum.toml")) {
-        let public_key = config
-            .split("public_keys = [\"")
-            .nth(1)
-            .unwrap()
-            .split('"')
-            .next()
-            .unwrap();
-        let uploaded = github::uploads(&server).await;
-        let signature = minisign::SignatureBox::from_string(&String::from_utf8_lossy(
-            &uploaded["index.json.minisig"],
-        ))
-        .unwrap();
-        let public_key = minisign::PublicKey::from_base64(public_key).unwrap();
-        minisign::verify(
-            &public_key,
-            &signature,
-            std::io::Cursor::new(&uploaded["index.json"]),
-            true,
-            false,
-            false,
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                std::fs::metadata(dir.path().join("keys/museum.key"))
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600
-            );
-        }
-    }
+    assert_eq!(
+        dir.path().join("museum.toml").exists(),
+        expected.is_ok() || config_exists
+    );
+    assert_eq!(
+        uploads(&server).await.get("index.json").map(Vec::as_slice),
+        expected.ok().map(|_| b"{}".as_slice())
+    );
 }
 
 fn publish_writes(index: &str, index_branch: Option<&str>) -> Vec<String> {
@@ -139,12 +102,8 @@ fn publish_writes(index: &str, index_branch: Option<&str>) -> Vec<String> {
         None => vec![
             "POST /repos/acme/plugins/releases".to_owned(),
             format!("POST /upload/index?name={index}"),
-            format!("POST /upload/index?name={index}.minisig"),
         ],
-        Some(_) => vec![
-            format!("PUT /repos/acme/plugins/contents/{index}"),
-            format!("PUT /repos/acme/plugins/contents/{index}.minisig"),
-        ],
+        Some(_) => vec![format!("PUT /repos/acme/plugins/contents/{index}")],
     };
     [artifact.to_vec(), index].concat()
 }
@@ -161,39 +120,36 @@ fn publish_writes(index: &str, index_branch: Option<&str>) -> Vec<String> {
 )]
 #[case::missing_config_refused(None, None, true, Err("museum.toml"))]
 #[case::index_in_repo_published(Some("index.json"), Some("main"), true, Ok(()))]
-#[case::missing_secret_key_refused(Some("index.json"), None, false, Err("--secret-key"))]
+#[case::missing_token_refused(
+    Some("index.json"),
+    None,
+    false,
+    Err("set GITHUB_TOKEN to a GitHub token")
+)]
 #[tokio::test]
 async fn cli_publishes_from_config(
     #[case] index: Option<&str>,
     #[case] index_branch: Option<&str>,
-    #[case] with_key: bool,
+    #[case] token: bool,
     #[case] expected: Result<(), &str>,
 ) {
     let (dir, server) = (
         TempDir::new().unwrap(),
         fake_github(&[], Answer::Normal).await,
     );
-    let keys = minisign::KeyPair::generate_encrypted_keypair(Some("pw".into())).unwrap();
-    std::fs::write(
-        dir.path().join("museum.key"),
-        keys.sk.to_box(None).unwrap().into_string(),
-    )
-    .unwrap();
     std::fs::write(dir.path().join("hello"), b"hello").unwrap();
     if let Some(index) = index {
-        let config = format!(
-            "registry = \"https://github.com/acme/plugins\"\nindex = \"{index}\"\nprefix = \"acme-\"\npublic_keys = [\"{}\"]\napi_url = \"{}\"\ntoken_env = \"GITHUB_TOKEN\"\n",
-            keys.pk.to_base64(),
-            server.uri()
-        );
         let branch = index_branch
             .map(|branch| format!("index_branch = \"{branch}\"\n"))
             .unwrap_or_default();
-        std::fs::write(dir.path().join("museum.toml"), config + &branch).unwrap();
+        let config = format!(
+            "registry = \"https://github.com/acme/plugins\"\nindex = \"{index}\"\nprefix = \"acme-\"\napi_url = \"{}\"\ntoken_env = \"GITHUB_TOKEN\"\n{branch}",
+            server.uri()
+        );
+        std::fs::write(dir.path().join("museum.toml"), config).unwrap();
     }
-
     let built = format!("{LINUX}=hello");
-    let mut args = vec![
+    let args = [
         "publish",
         "--package",
         "hello",
@@ -204,22 +160,10 @@ async fn cli_publishes_from_config(
         "--file",
         &built,
     ];
-    args.extend(if with_key {
-        ["--secret-key", "museum.key"].as_slice()
-    } else {
-        [].as_slice()
-    });
-    let output = museum(dir.path(), &args);
 
-    let outcome = refusal(&output);
-    assert!(
-        outcome
-            .as_ref()
-            .err()
-            .is_none_or(|e| e.contains(expected.err().unwrap_or_default())),
-        "{outcome:?}"
-    );
-    assert_eq!(outcome.is_ok(), expected.is_ok());
+    let output = museum(dir.path(), &args, token);
+
+    assert_refused(&output, expected);
     let expected_writes = if expected.is_ok() {
         publish_writes(index.unwrap(), index_branch)
     } else {

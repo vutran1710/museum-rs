@@ -13,13 +13,10 @@ use common::LINUX;
 use common::artifact;
 use common::assert_outcome;
 use common::fixture;
-use common::keypair;
 use common::registry;
 use common::seeded;
-use common::sign;
 use museum::Artifact;
 use museum::Build;
-use museum::Signed;
 use museum::VersionReq;
 use museum::resolve;
 use rstest::rstest;
@@ -86,8 +83,7 @@ async fn fetch_leaves_only_verified_files(
         Dir::Relative => relative.clone(),
         Dir::Missing => temp.path().join("a").join("b"),
     };
-    let keys = keypair();
-    let (store, index) = seeded(&fixture(), &keys);
+    let (store, index) = seeded(&fixture());
     let store = store.with_faults(faults);
     let right = artifact("modbus", "0.4.2", LINUX);
     if !served_right {
@@ -109,7 +105,7 @@ async fn fetch_leaves_only_verified_files(
     if let Some(bytes) = on_disk {
         std::fs::write(installed(&given), bytes).unwrap();
     }
-    let registry = registry(store, index, &[&keys], &given);
+    let registry = registry(store, index, &given);
 
     let fetched = registry.fetch(&build()).await;
 
@@ -159,23 +155,16 @@ enum Broken {
 async fn failures_are_typed(#[case] broken: Broken, #[case] package: &str, #[case] expected: &str) {
     let temp = TempDir::new().unwrap();
     let dir = temp.path().join("downloads");
-    let keys = keypair();
-    let (mut store, index) = seeded(&fixture(), &keys);
+    let (mut store, index) = seeded(&fixture());
     match broken {
         Broken::Store => store = store.with_faults(&[Fault::Broken]),
         Broken::Bootstrap => store.bootstrap_fails = true,
         Broken::IndexRead => *index.place().broken.lock().unwrap() = true,
-        Broken::IndexDecode => {
-            let garbage = Signed {
-                index: b"garbage".to_vec(),
-                signature: Some(sign(&keys, b"garbage")),
-            };
-            *index.place().signed.lock().unwrap() = Some(garbage);
-        }
+        Broken::IndexDecode => *index.place().index.lock().unwrap() = Some(b"garbage".to_vec()),
         Broken::DownloadDir => std::fs::write(&dir, b"a file").unwrap(),
         Broken::Nothing => {}
     }
-    let registry = registry(store, index, &[&keys], &dir);
+    let registry = registry(store, index, &dir);
 
     let fetched = match registry
         .resolve(package, LINUX, 2, &[VersionReq::STAR])

@@ -1,12 +1,11 @@
 //! Fetches `hello` from the YAML registry that lives in this repository's own releases,
-//! verifies it, and runs it. The trusted key and prefix are read from examples/yaml/museum.toml.
+//! verifies its digest, and runs it. The prefix is read from examples/yaml/museum.toml.
 
 use std::error::Error;
 use std::time::Duration;
 
 use museum::HOST_TARGET;
 use museum::Options;
-use museum::PublicKey;
 use museum::Registry;
 use museum::VersionReq;
 use museum::Yaml;
@@ -16,9 +15,6 @@ use museum::github::reqwest;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let config: toml::Table = include_str!("yaml/museum.toml").parse()?;
-    let key = config["public_keys"][0]
-        .as_str()
-        .ok_or("museum.toml has no public key")?;
     let prefix = config["prefix"]
         .as_str()
         .ok_or("museum.toml has no prefix")?;
@@ -26,12 +22,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()?;
-    let gh = Github::public("vutran1710/museum-rs")?
+    let gh = Github::new("vutran1710/museum-rs")?
         .prefix(prefix)
         .client(client);
     let index = Yaml::new(gh.release_file("index/index.yaml")?);
     let options = Options {
-        trusted_keys: vec![PublicKey::from_base64(key)?],
         download_dir: "target/museum/yaml".into(),
     };
     let registry = Registry::github(&gh, index, options)?;

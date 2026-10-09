@@ -14,7 +14,6 @@ use museum::LocalFile;
 use museum::Location;
 use museum::NewRelease;
 use museum::Options;
-use museum::PublicKey;
 use museum::Registry;
 use museum::Store;
 use museum::StoreError;
@@ -87,11 +86,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let dir = std::env::temp_dir().join("museum-local-registry");
     let _ = std::fs::remove_dir_all(&dir);
 
-    // The publisher's key pair. A real pipeline loads its secret key; hosts only get the public
-    // key.
-    let keys = minisign::KeyPair::generate_unencrypted_keypair()?;
     let options = Options {
-        trusted_keys: vec![PublicKey::from_base64(&keys.pk.to_base64())?],
         download_dir: dir.join("downloads"),
     };
     let index = Yaml::new(LocalFile::new(dir.join("index.yaml")));
@@ -103,7 +98,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         options,
     )?;
 
-    registry.init(&keys.sk).await?;
+    registry.init().await?;
     let files = [(HOST_TARGET.to_owned(), std::env::current_exe()?)];
     let release = NewRelease {
         package: "demo",
@@ -111,7 +106,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         interface: 1,
         files: &files,
     };
-    let published = registry.publish(release, &keys.sk).await?;
+    let published = registry.publish(release).await?;
     println!("published: {}", published.uploads.join(", "));
 
     let wanted = [("demo".to_owned(), VersionReq::parse("^1")?)];

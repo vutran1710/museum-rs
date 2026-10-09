@@ -12,7 +12,6 @@ use museum::IndexStore;
 use museum::Json;
 use museum::LocalFile;
 use museum::ReleaseIndex;
-use museum::Signed;
 use museum::Toml;
 use museum::Yaml;
 use rstest::rstest;
@@ -47,18 +46,9 @@ async fn decode<X: ReleaseIndex>(empty: X, input: Option<&str>) -> Decoded {
         || written.encode().unwrap(),
         |input| input.as_bytes().to_vec(),
     );
-    let files = empty
-        .store()
-        .write(Signed {
-            index: bytes,
-            signature: None,
-        })
-        .await
-        .unwrap();
+    let written_to = empty.store().write(bytes).await.unwrap();
     let read = empty.store().read().await.unwrap();
-    let decoded = empty
-        .decode(&read.index)
-        .map_err(|e| Refusal(format!("{e:?}")))?;
+    let decoded = empty.decode(&read).map_err(|e| Refusal(format!("{e:?}")))?;
     assert!(
         decoded
             .packages()
@@ -70,7 +60,7 @@ async fn decode<X: ReleaseIndex>(empty: X, input: Option<&str>) -> Decoded {
         .into_iter()
         .map(|p| (p.clone(), decoded.releases(&p).len()))
         .collect();
-    let file_name = std::path::Path::new(&files[0])
+    let file_name = std::path::Path::new(&written_to)
         .file_name()
         .unwrap()
         .to_string_lossy()

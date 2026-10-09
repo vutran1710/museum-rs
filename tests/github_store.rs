@@ -33,6 +33,11 @@ use wiremock::matchers::header;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
+fn authorised() -> reqwest::header::HeaderMap {
+    let token = reqwest::header::HeaderValue::from_static("Bearer t0ken");
+    reqwest::header::HeaderMap::from_iter([(reqwest::header::AUTHORIZATION, token)])
+}
+
 fn client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
@@ -111,7 +116,7 @@ async fn public_releases_serve_artifacts(
         Server::Down => "http://127.0.0.1:9".to_owned(),
         Server::CutShort => cut_short_server().await,
     };
-    let store = Github::public("acme/plugins")
+    let store = Github::new("acme/plugins")
         .unwrap()
         .client(client())
         .enterprise(&base, &base, &base)
@@ -169,33 +174,13 @@ async fn private_api(status: u16) -> MockServer {
 }
 
 #[rstest]
-#[case::assets_resolved_through_api("REGISTRY_TEST_TOKEN", 200, Wanted::OnFirstPage, Ok(b"first".to_vec()), false)]
-#[case::releases_listed_across_pages("REGISTRY_TEST_TOKEN", 200, Wanted::Artifact, Ok(b"binary".to_vec()), false)]
-#[case::token_sent_on_every_request("REGISTRY_TEST_TOKEN", 200, Wanted::Artifact, Ok(b"binary".to_vec()), false)]
-#[case::missing_token_env_refused(
-    "REGISTRY_TEST_NO_SUCH_TOKEN",
-    200,
-    Wanted::OnFirstPage,
-    Err("MissingToken"),
-    false
-)]
-#[case::refused_401_is_unauthorized(
-    "REGISTRY_TEST_TOKEN",
-    401,
-    Wanted::OnFirstPage,
-    Err("Refused { status: 401"),
-    true
-)]
-#[case::unpublished_asset_is_not_found(
-    "REGISTRY_TEST_TOKEN",
-    200,
-    Wanted::Unpublished,
-    Err("MissingAsset"),
-    false
-)]
+#[case::assets_resolved_through_api(200, Wanted::OnFirstPage, Ok(b"first".to_vec()), false)]
+#[case::releases_listed_across_pages(200, Wanted::Artifact, Ok(b"binary".to_vec()), false)]
+#[case::token_sent_on_every_request(200, Wanted::Artifact, Ok(b"binary".to_vec()), false)]
+#[case::refused_401_is_unauthorized(401, Wanted::OnFirstPage, Err("Refused { status: 401"), true)]
+#[case::unpublished_asset_is_not_found(200, Wanted::Unpublished, Err("MissingAsset"), false)]
 #[tokio::test]
 async fn private_releases_serve_artifacts(
-    #[case] token_env: &str,
     #[case] status: u16,
     #[case] wanted: Wanted,
     #[case] expected: Result<Vec<u8>, &str>,
@@ -203,8 +188,9 @@ async fn private_releases_serve_artifacts(
 ) {
     let server = private_api(status).await;
     let uri = server.uri();
-    let store = Github::private("acme/plugins", token_env)
+    let store = Github::new("acme/plugins")
         .unwrap()
+        .headers(authorised())
         .client(client())
         .enterprise(&uri, &uri, &uri)
         .prefix("acme-")
@@ -270,9 +256,9 @@ async fn releases_upload(
 ) {
     let server = fake_github(existing, given).await;
     let uri = server.uri();
-    let private = Github::private("acme/plugins", "REGISTRY_TEST_TOKEN").unwrap();
+    let private = Github::new("acme/plugins").unwrap().headers(authorised());
     let github = if anonymous {
-        Github::public("acme/plugins").unwrap()
+        Github::new("acme/plugins").unwrap()
     } else {
         private
     };

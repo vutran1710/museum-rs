@@ -13,7 +13,6 @@ use common::github::fake_github;
 use museum::IndexError;
 use museum::IndexStore;
 use museum::LocalFile;
-use museum::Signed;
 use museum::github::Github;
 use museum::github::HttpFile;
 use museum::github::reqwest;
@@ -47,9 +46,13 @@ enum Op {
 #[derive(Clone, Copy)]
 enum Served {
     Nothing,
-    IndexAndSignature,
-    IndexOnly,
+    Index,
     ExistingCommit,
+}
+
+fn authorised() -> reqwest::header::HeaderMap {
+    let token = reqwest::header::HeaderValue::from_static("Bearer t0ken");
+    reqwest::header::HeaderMap::from_iter([(reqwest::header::AUTHORIZATION, token)])
 }
 
 fn client() -> reqwest::Client {
@@ -59,20 +62,12 @@ fn client() -> reqwest::Client {
         .unwrap()
 }
 
-fn signed() -> Signed {
-    Signed {
-        index: b"{}".to_vec(),
-        signature: Some(b"sig".to_vec()),
-    }
-}
-
 async fn serve(server: &MockServer, served: Served) {
     let raw = || header("accept", "application/vnd.github.raw");
     let json = header("accept", "application/vnd.github+json");
     let files: &[(&str, &str)] = match served {
         Served::Nothing | Served::ExistingCommit => &[],
-        Served::IndexAndSignature => &[("index.json", "{}"), ("index.json.minisig", "sig")],
-        Served::IndexOnly => &[("index.json", "{}")],
+        Served::Index => &[("index.json", "{}")],
     };
     for (file, body) in files {
         for at in [
@@ -116,21 +111,16 @@ async fn serve(server: &MockServer, served: Served) {
 async fn exercise<I: IndexStore>(store: I, op: Op) -> Result<String, (String, bool)> {
     let refused = |e: I::Error| (format!("{e:?}"), e.not_found());
     let written = match op {
-        Op::Read => Vec::new(),
-        Op::Write | Op::WriteThenRead => store.write(signed()).await.map_err(refused)?,
+        Op::Read => String::new(),
+        Op::Write | Op::WriteThenRead => store.write(b"{}".to_vec()).await.map_err(refused)?,
     };
     let read = match op {
         Op::Write => None,
         Op::Read | Op::WriteThenRead => Some(store.read().await.map_err(refused)?),
     };
     Ok(match read {
-        Some(read) => {
-            let signature = read.signature.map_or("none".to_owned(), |s| {
-                String::from_utf8_lossy(&s).into_owned()
-            });
-            format!("{} | {signature}", String::from_utf8_lossy(&read.index))
-        }
-        None => written.join(", "),
+        Some(read) => String::from_utf8_lossy(&read).into_owned(),
+        None => written,
     })
 }
 
@@ -151,15 +141,16 @@ async fn commits(server: &MockServer) -> Vec<String> {
 }
 
 #[rstest]
-#[case::local_file_round_trip(Place::Local, Op::WriteThenRead, Served::Nothing, Ok("{} | sig"), &[])]
+#[case::local_file_round_trip(Place::Local, Op::WriteThenRead, Served::Nothing, Ok("{}"), &[])]
 #[case::local_file_missing_is_not_found(Place::Local, Op::Read, Served::Nothing, Err(("Os {", true)), &[])]
-#[case::http_file_read(Place::Http, Op::Read, Served::IndexAndSignature, Ok("{} | sig"), &[])]
+#[case::http_file_read(Place::Http, Op::Read, Served::Index, Ok("{}"), &[])]
 #[case::http_file_is_read_only(Place::Http, Op::Write, Served::Nothing, Err(("ReadOnly", false)), &[])]
-#[case::github_release_file_read(Place::ReleasePublic, Op::Read, Served::IndexAndSignature, Ok("{} | sig"), &[])]
-#[case::github_release_file_written(Place::ReleaseApi, Op::Write, Served::Nothing, Ok("index/index.json, index/index.json.minisig"), &[])]
-#[case::github_file_read_raw(Place::RepoRaw, Op::Read, Served::IndexOnly, Ok("{} | none"), &[])]
-#[case::github_file_read_with_token(Place::RepoToken, Op::Read, Served::IndexAndSignature, Ok("{} | sig"), &[])]
-#[case::github_file_committed_over_existing(Place::RepoToken, Op::Write, Served::ExistingCommit, Ok("main:registry/index.json, main:registry/index.json.minisig"), &["registry/index.json sha=abc", "registry/index.json.minisig sha=none"])]
+#[case::github_release_file_read(Place::ReleasePublic, Op::Read, Served::Index, Ok("{}"), &[])]
+#[case::github_release_file_written(Place::ReleaseApi, Op::Write, Served::Nothing, Ok("index/index.json"), &[])]
+#[case::github_file_read_raw(Place::RepoRaw, Op::Read, Served::Index, Ok("{}"), &[])]
+#[case::github_file_read_with_token(Place::RepoToken, Op::Read, Served::Index, Ok("{}"), &[])]
+#[case::github_file_committed_over_existing(Place::RepoToken, Op::Write, Served::ExistingCommit, Ok("main:registry/index.json"), &["registry/index.json sha=abc"])]
+#[case::github_file_without_authorization_is_read_only(Place::RepoRaw, Op::Write, Served::Nothing, Err(("ReadOnly", false)), &[])]
 #[case::github_file_missing_is_not_found(Place::RepoRaw, Op::Read, Served::Nothing, Err(("Refused { status: 404", true)), &[])]
 #[tokio::test]
 async fn index_stores_read_and_write(
@@ -175,12 +166,13 @@ async fn index_stores_read_and_write(
     );
     serve(&server, served).await;
     let uri = server.uri();
-    let public = Github::public("acme/plugins")
+    let public = Github::new("acme/plugins")
         .unwrap()
         .client(client())
         .enterprise(&uri, &uri, &uri);
-    let private = Github::private("acme/plugins", "REGISTRY_TEST_TOKEN")
+    let private = Github::new("acme/plugins")
         .unwrap()
+        .headers(authorised())
         .client(client())
         .enterprise(&uri, &uri, &uri);
 

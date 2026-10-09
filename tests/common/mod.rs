@@ -1,6 +1,6 @@
 //! Test doubles shared by the core tests: an in-memory `Store` for executables that counts calls
-//! and fails on demand, an in-memory `ReleaseIndex` whose place counts reads, the release fixture
-//! and minisign keys.
+//! and fails on demand, an in-memory `ReleaseIndex` whose store counts reads, and the release
+//! fixture.
 
 #![allow(dead_code)]
 
@@ -25,11 +25,9 @@ use museum::IndexError;
 use museum::IndexStore;
 use museum::Location;
 use museum::Options;
-use museum::PublicKey;
 use museum::Registry;
 use museum::Release;
 use museum::ReleaseIndex;
-use museum::Signed;
 use museum::Store;
 use museum::StoreError;
 use museum::StoreWriter;
@@ -183,7 +181,7 @@ impl StoreWriter for MemStore {
 /// Where a `MemIndex` lives: shared by every clone, counting reads, failing on demand.
 #[derive(Default)]
 pub struct MemPlace {
-    pub signed: Mutex<Option<Signed>>,
+    pub index: Mutex<Option<Vec<u8>>>,
     pub reads: AtomicUsize,
     pub broken: Mutex<bool>,
 }
@@ -220,21 +218,21 @@ impl IndexError for MemStoreError {
 impl IndexStore for MemIndexStore {
     type Error = MemStoreError;
 
-    async fn read(&self) -> Result<Signed, MemStoreError> {
+    async fn read(&self) -> Result<Vec<u8>, MemStoreError> {
         self.0.reads.fetch_add(1, Ordering::SeqCst);
         if *self.0.broken.lock().unwrap() {
             return Err(MemStoreError::Broken);
         }
         self.0
-            .signed
+            .index
             .lock()
             .unwrap()
             .clone()
             .ok_or(MemStoreError::NotFound)
     }
-    async fn write(&self, signed: Signed) -> Result<Vec<String>, MemStoreError> {
-        *self.0.signed.lock().unwrap() = Some(signed);
-        Ok(vec!["mem:index".to_owned()])
+    async fn write(&self, index: Vec<u8>) -> Result<String, MemStoreError> {
+        *self.0.index.lock().unwrap() = Some(index);
+        Ok("mem:index".to_owned())
     }
 }
 
@@ -360,23 +358,8 @@ pub fn fixture() -> MemIndex {
     index
 }
 
-pub fn keypair() -> minisign::KeyPair {
-    minisign::KeyPair::generate_unencrypted_keypair().unwrap()
-}
-
-pub fn trusted(keys: &minisign::KeyPair) -> PublicKey {
-    PublicKey::from_base64(&keys.pk.to_base64()).unwrap()
-}
-
-pub fn sign(keys: &minisign::KeyPair, bytes: &[u8]) -> Vec<u8> {
-    minisign::sign(None, &keys.sk, std::io::Cursor::new(bytes), None, None)
-        .unwrap()
-        .to_string()
-        .into_bytes()
-}
-
-/// A store holding every artifact of `index`, and an empty index whose place holds `index` signed.
-pub fn seeded(index: &MemIndex, signer: &minisign::KeyPair) -> (MemStore, MemIndex) {
+/// A store holding every artifact of `index`, and an empty index whose store holds `index`.
+pub fn seeded(index: &MemIndex) -> (MemStore, MemIndex) {
     let store = MemStore::default();
     for package in index.packages() {
         for (version, release) in index.releases(&package) {
@@ -393,25 +376,19 @@ pub fn seeded(index: &MemIndex, signer: &minisign::KeyPair) -> (MemStore, MemInd
         }
     }
     let empty = MemIndex::default();
-    let bytes = index.encode().unwrap();
-    *empty.place().signed.lock().unwrap() = Some(Signed {
-        signature: Some(sign(signer, &bytes)),
-        index: bytes,
-    });
+    *empty.place().index.lock().unwrap() = Some(index.encode().unwrap());
     (store, empty)
 }
 
-pub fn registry(
-    store: MemStore,
-    index: MemIndex,
-    keys: &[&minisign::KeyPair],
-    dir: &Path,
-) -> Registry<MemStore, MemIndex> {
-    let options = Options {
-        trusted_keys: keys.iter().map(|k| trusted(k)).collect(),
-        download_dir: dir.to_path_buf(),
-    };
-    Registry::new(store, index, options).unwrap()
+pub fn registry(store: MemStore, index: MemIndex, dir: &Path) -> Registry<MemStore, MemIndex> {
+    Registry::new(
+        store,
+        index,
+        Options {
+            download_dir: dir.to_path_buf(),
+        },
+    )
+    .unwrap()
 }
 
 pub fn assert_outcome<T: PartialEq + std::fmt::Debug, E: std::fmt::Debug>(

@@ -73,7 +73,7 @@ fn github_location_follows_layout(
     #[case] group: &str,
     #[case] file: &str,
 ) {
-    let store = Github::public("acme/plugins")
+    let store = Github::new("acme/plugins")
         .unwrap()
         .prefix(prefix)
         .releases();
@@ -124,7 +124,7 @@ fn github_addresses_parse(
         Address::File => written
             .parse::<FileAddress>()
             .map(|a| format!("{} | {}", a.reference, a.path)),
-        Address::Repo => Github::public(written).map(|_| written.to_owned()),
+        Address::Repo => Github::new(written).map(|_| written.to_owned()),
     };
     match (parsed, expected) {
         (Ok(parsed), Ok(expected)) => assert_eq!(parsed, expected),

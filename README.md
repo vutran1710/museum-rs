@@ -6,7 +6,7 @@
 
 <p align="center">
   A registry for executables your program downloads at runtime.<br>
-  Signed index, semver resolution, per-target builds, atomic installs.
+  Semver resolution, per-target builds, verified digests, atomic installs.
 </p>
 
 <p align="center">
@@ -20,10 +20,10 @@
 
 Some programs are extended by other programs. A host starts separate executables (drivers, plugins, agents) that are released on their own schedule, for several platforms. **museum** is the library both sides use:
 
-- **The host** asks for `modbus ^0.4`. museum picks the newest version that fits, has a build for the host's exact target triple and speaks the host's interface version. It then downloads the build, proves it is the file the publisher signed, and installs it atomically.
-- **The release pipeline** runs `museum publish`. It adds the new version to the index, refuses to change an already published one, signs the index, and uploads everything.
+- **The host** asks for `modbus ^0.4`. museum picks the newest version that fits, has a build for the host's exact target triple and speaks the host's interface version. It then downloads the build, checks it against the digest the index lists, and installs it atomically.
+- **The release pipeline** runs `museum publish`. It adds the new version to the index, refuses to change an already published one, and uploads everything.
 
-Where the executables live, where the index lives, and what the index file looks like are three separate choices. GitHub, JSON, YAML and TOML are built in; each can be replaced by your own type.
+Where the executables live, where the index lives, and what the index file looks like are three separate choices. GitHub, JSON, YAML and TOML are built in; each can be replaced by your own type. museum adds no access layer of its own: reading a public registry needs nothing, and private reads and writes use whatever the store already requires, such as a GitHub token.
 
 ## Contents
 
@@ -47,14 +47,14 @@ flowchart LR
     end
     subgraph remote [GitHub, S3, a CDN, ...]
         A[executables]
-        I[index file + .minisig]
+        I[index file]
     end
     subgraph host [Host program]
         R[Registry] --> D[download dir]
     end
     P -- upload --> A
-    P -- sign + write --> I
-    I -- verify signature --> R
+    P -- write --> I
+    I -- read --> R
     A -- stream + sha256 --> R
 ```
 
@@ -66,7 +66,7 @@ flowchart LR
 | `X` | `ReleaseIndex` | the format of the index file | `Json`, `Yaml`, `Toml` |
 | `X::Store` | `IndexStore` | where that one index file lives | `gh.release_file("<tag>/<name>")`, `gh.file("<ref>/<path>")`, `HttpFile`, `LocalFile` |
 
-Everything that must hold for every combination lives in the core, written once: bootstrapping access, signature checks, version resolution, hashing, the download cache and atomic installs.
+Everything that must hold for every combination lives in the core, written once: bootstrapping access, version resolution, digest checks, the download cache and atomic installs.
 
 ## Install
 
@@ -78,21 +78,14 @@ cargo install museum-cli         # the `museum` command for release pipelines
 ## Fetching from a host
 
 ```rust
-use museum::{HOST_TARGET, Json, Options, PublicKey, Registry, VersionReq};
+use museum::{HOST_TARGET, Json, Options, Registry, VersionReq};
 use museum::github::Github;
-
-// The publisher's public key: one of `public_keys` in the museum.toml that `museum init` wrote.
-const PUBLISHER_KEY: &str = "RW...";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let gh = Github::public("acme/plugins")?.prefix("acme-");   // Github::private("acme/plugins", "GITHUB_TOKEN")?
-    let index = Json::new(gh.file("main/registry/index.json")?);  // or gh.release_file("index/index.json")?
-    let options = Options {
-        trusted_keys: vec![PublicKey::from_base64(PUBLISHER_KEY)?],
-        download_dir: "drivers".into(), // relative paths resolve against the current directory, once
-    };
-    let registry = Registry::github(&gh, index, options)?;
+    let gh = Github::new("acme/plugins")?.prefix("acme-");
+    let index = Json::new(gh.file("main/registry/index.json")?);   // or gh.release_file("index/index.json")?
+    let registry = Registry::github(&gh, index, Options { download_dir: "drivers".into() })?;
 
     let wanted = [
         ("modbus".to_string(), VersionReq::parse("^0.4")?),
@@ -106,47 +99,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+A private repository only needs the header GitHub expects; nothing else changes:
+
+```rust
+use museum::github::reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
+
+let auth = HeaderValue::from_str(&format!("Bearer {}", std::env::var("GITHUB_TOKEN")?))?;
+let gh = Github::new("acme/private-plugins")?.headers(HeaderMap::from_iter([(AUTHORIZATION, auth)]));
+```
+
 What `fetch_all` does:
 
-1. Reads the index file and its signature from the index store once, verifies the signature against your trusted keys, then decodes it.
+1. Reads the index file from its store once, and decodes it.
 2. Resolves **one version per package** that satisfies every requirement for that package. Two requirements that no single version satisfies give `Unresolvable::Conflict`.
 3. Bootstraps the executables store once and shares the session. If the store answers "unauthorized", museum bootstraps again once and retries.
-4. Downloads each package once, in parallel, into `<package>-<version>[.exe]`, and returns typed errors you can match on.
+4. Downloads each package once, in parallel, into `<package>-<version>[.exe]`, checks its sha256, and returns typed errors you can match on.
 
-`HOST_TARGET` is Cargo's exact target triple, so `x86_64-pc-windows-msvc` and `x86_64-pc-windows-gnu` are told apart. To set a timeout or proxy, pass your own client: `Github::public(..)?.client(reqwest_client)`.
+`HOST_TARGET` is Cargo's exact target triple, so `x86_64-pc-windows-msvc` and `x86_64-pc-windows-gnu` are told apart. A relative `download_dir` is resolved against the current directory once, in `Registry::new`. To set a timeout or proxy, pass your own client: `Github::new(..)?.client(reqwest_client)`.
 
 ## Publishing with the CLI
 
 ```sh
-# once per registry: creates a signing key, museum.toml and an empty signed index
 export GITHUB_TOKEN=$(gh auth token)
-export MUSEUM_KEY_PASSWORD=...        # protects the generated secret key
-museum init --registry https://github.com/acme/plugins --index index.yaml --prefix acme- \
-  --secret-key ~/.config/museum/acme-plugins.key   # keep it out of the repository
+
+# once per registry: writes museum.toml and an empty index
+museum init --registry https://github.com/acme/plugins --index index.yaml --prefix acme-
   # add --index-branch main to commit the index to the repository instead of the `index` release
 
 # every release
-export MUSEUM_SECRET_KEY=~/.config/museum/acme-plugins.key   # or --secret-key
 museum publish --package modbus --version 0.4.2 --interface 2 \
   --file x86_64-unknown-linux-gnu=target/x86_64-unknown-linux-gnu/release/modbus \
   --file x86_64-pc-windows-msvc=target/x86_64-pc-windows-msvc/release/modbus.exe
 ```
 
-`museum init` writes this `museum.toml`. Commit it: it holds only public, portable settings. Where the secret key lives is up to each machine, so `publish` takes it from `--secret-key` or `MUSEUM_SECRET_KEY`.
+`museum init` writes this `museum.toml`. Commit it: it holds only public, portable settings.
 
 ```toml
 registry = "https://github.com/acme/plugins"
 index = "index.yaml"
 prefix = "acme-"
-public_keys = ["RWT..."]                            # give these to your hosts
-api_url = "https://api.github.com"                  # or a GitHub Enterprise API root
-token_env = "GITHUB_TOKEN"
-# index_branch = "main"                             # index committed to the repository
+api_url = "https://api.github.com"     # or a GitHub Enterprise API root
+token_env = "GITHUB_TOKEN"             # the variable holding the token sent as `Authorization`
+# index_branch = "main"                # index committed to the repository
 ```
 
-`museum publish` verifies the current index, refuses to change a version that is already published, uploads the executables, and writes the re-signed index last. A host therefore never sees an index entry whose file is missing. Publishing the same files again is a no-op.
+`museum publish` reads the current index, refuses to change a version that is already published, uploads the executables, and writes the updated index last. A host therefore never sees an index entry whose file is missing. Publishing the same files again is a no-op.
 
-The same flow is available from Rust as `Registry::init` and `Registry::publish`.
+The same flow is available from Rust as `Registry::init` and `Registry::publish`; see [`examples/local_registry.rs`](examples/local_registry.rs).
 
 ## Bring your own store, index store or format
 
@@ -169,18 +168,18 @@ impl Store for S3Releases {
 }
 ```
 
-**An index store** finds and keeps one index file and its `.minisig`.
+**An index store** finds and keeps one index file.
 
 ```rust
-use museum::{IndexStore, Signed};
+use museum::IndexStore;
 
 #[derive(Clone)]
 struct S3File { /* bucket, key */ }
 
 impl IndexStore for S3File {
     type Error = S3Error;        // implements IndexError: not_found()
-    async fn read(&self) -> Result<Signed, S3Error> { /* index bytes + optional signature */ }
-    async fn write(&self, signed: Signed) -> Result<Vec<String>, S3Error> { /* both files */ }
+    async fn read(&self) -> Result<Vec<u8>, S3Error> { /* the file's bytes */ }
+    async fn write(&self, index: Vec<u8>) -> Result<String, S3Error> { /* returns where it went */ }
 }
 ```
 
@@ -212,24 +211,23 @@ Errors stay typed all the way: `RegistryError<S, X>` carries your store's, your 
 
 | Guarantee | How |
 |---|---|
-| The index came from the publisher | minisign (Ed25519) signature over the raw index bytes, checked before decoding. Several trusted keys are accepted, so a key can be rotated. A missing signature is refused; there is no unsigned fallback. |
 | A file is the one the index lists | sha256 is computed while streaming, and compared before the file gets its real name. |
 | A failed download leaves nothing runnable | Bytes land in `<name>.part` and are renamed into place only after the digest matches. Every failure path removes the `.part`. |
 | Cached files are not trusted blindly | An existing file is re-hashed. A damaged or different build is downloaded again and overwritten. |
 | Published versions are immutable | `publish` refuses a version that exists with different files. |
 | Executables run on Unix | Installed with mode `0755`. |
 
-Not covered in this version: rollback protection, meaning an attacker serving an older but validly signed index.
+Who may read or write is the store's business. museum checks integrity, not authorship: anyone who can write to the store can change both an executable and its digest.
 
 ## Layout on GitHub
 
 ```
 executables     release `<package>-v<version>`     asset <prefix><package>-<version>-<target>[.exe]
-index           gh.release_file("<tag>/<name>")    asset <name> + <name>.minisig of release <tag>
-                gh.file("<ref>/<path>")            <path> + <path>.minisig at a branch, tag or commit
+index           gh.release_file("<tag>/<name>")    asset <name> of release <tag>
+                gh.file("<ref>/<path>")            <path> at a branch, tag or commit
 ```
 
-The repository is given once, to `Github::public("owner/repo")` or `Github::private("owner/repo", token_env)`. In `gh.file(..)` the first segment is the ref, so a branch whose name contains `/` cannot be addressed this way.
+The repository is given once, to `Github::new("owner/repo")`. In `gh.file(..)` the first segment is the ref, so a branch whose name contains `/` cannot be addressed this way. With an `Authorization` header, release assets are read through GitHub's API (private repositories need this); without one they are downloaded directly.
 
 `.exe` is added when the **target** contains `windows`, so a Linux pipeline can publish Windows builds. One repository can host several registries at once as long as their index files and prefixes differ. This repository does exactly that for its examples.
 
@@ -249,7 +247,7 @@ modbus:
 | Example | Shows |
 |---|---|
 | [`local_registry`](examples/local_registry.rs) | The library end to end, with no network: a custom `Store` keeping executables in a folder, a `Yaml` index in a `LocalFile`, then `init`, `publish` and `fetch_all` from Rust. |
-| [`fetch_json`](examples/fetch_json.rs), [`fetch_yaml`](examples/fetch_yaml.rs) | A host reading the two example registries hosted side by side in this repository's own releases: it fetches `hello` for your platform, verifies it, and runs it. |
+| [`fetch_json`](examples/fetch_json.rs), [`fetch_yaml`](examples/fetch_yaml.rs) | A host reading the two example registries hosted side by side in this repository's own releases: it fetches `hello` for your platform, checks its digest, and runs it. |
 
 ```sh
 cargo run --example local_registry --features yaml

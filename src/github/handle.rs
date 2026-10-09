@@ -1,7 +1,9 @@
-//! `Github`: one repository and how it is reached, anonymously or with a token. It hands out the
-//! executables store and the index stores for files in that repository.
+//! `Github`: one repository, and the HTTP headers sent with every request to it (an `Authorization`
+//! header makes private repositories readable and uploads possible). It hands out the executables
+//! store and the index stores for files in that repository.
 
-use reqwest::header::HeaderValue;
+use reqwest::header::AUTHORIZATION;
+use reqwest::header::HeaderMap;
 
 use crate::github::GITHUB;
 use crate::github::GITHUB_API;
@@ -9,7 +11,6 @@ use crate::github::GITHUB_RAW;
 use crate::github::GithubError;
 use crate::github::address::FileAddress;
 use crate::github::address::RepoAddress;
-use crate::github::bearer;
 use crate::github::files::GithubFile;
 use crate::github::releases::GithubReleaseFile;
 use crate::github::releases::GithubReleases;
@@ -18,7 +19,7 @@ use crate::github::releases::GithubReleases;
 pub struct Github {
     repo: RepoAddress,
     pub(crate) client: reqwest::Client,
-    pub(crate) token_env: Option<String>,
+    pub(crate) headers: HeaderMap,
     pub(crate) prefix: String,
     web: String,
     api: String,
@@ -26,12 +27,12 @@ pub struct Github {
 }
 
 impl Github {
-    /// `owner/repo`, read anonymously: downloads from `releases/download` and raw files.
-    pub fn public(repo: &str) -> Result<Self, GithubError> {
+    /// `owner/repo`, read anonymously until headers carry an `Authorization`.
+    pub fn new(repo: &str) -> Result<Self, GithubError> {
         Ok(Self {
             repo: repo.parse()?,
             client: reqwest::Client::new(),
-            token_env: None,
+            headers: HeaderMap::new(),
             prefix: String::new(),
             web: GITHUB.to_owned(),
             api: GITHUB_API.to_owned(),
@@ -39,12 +40,11 @@ impl Github {
         })
     }
 
-    /// `owner/repo`, read and written through the API with the token in `token_env`.
-    pub fn private(repo: &str, token_env: &str) -> Result<Self, GithubError> {
-        Ok(Self {
-            token_env: Some(token_env.to_owned()),
-            ..Self::public(repo)?
-        })
+    /// Sent with every request, e.g. `Authorization: Bearer <token>`. With an `Authorization`
+    /// header, release assets are read through the API, and uploads and commits become
+    /// possible.
+    pub fn headers(self, headers: HeaderMap) -> Self {
+        Self { headers, ..self }
     }
 
     /// Put in front of every executable's file name, e.g. `acme-`.
@@ -90,8 +90,18 @@ impl Github {
         Ok(GithubFile::new(self.clone(), address.parse()?))
     }
 
-    pub(crate) fn token(&self) -> Result<Option<HeaderValue>, GithubError> {
-        self.token_env.as_deref().map(bearer).transpose()
+    pub(crate) fn authorised(&self) -> bool {
+        self.headers.contains_key(AUTHORIZATION)
+    }
+
+    /// The configured headers plus `Accept`.
+    pub(crate) fn accepting(&self, accept: &'static str) -> HeaderMap {
+        let mut headers = self.headers.clone();
+        headers.insert(
+            reqwest::header::ACCEPT,
+            reqwest::header::HeaderValue::from_static(accept),
+        );
+        headers
     }
 
     pub(crate) fn download_root(&self) -> String {

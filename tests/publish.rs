@@ -15,7 +15,6 @@ use common::WIN;
 use common::artifact;
 use common::assert_outcome;
 use common::fixture;
-use common::keypair;
 use common::registry;
 use common::seeded;
 use museum::NewRelease;
@@ -32,17 +31,13 @@ enum Existing {
     Broken,
 }
 
-fn registry_with(
-    existing: Existing,
-    keys: &minisign::KeyPair,
-    dir: &Path,
-) -> Registry<MemStore, MemIndex> {
+fn registry_with(existing: Existing, dir: &Path) -> Registry<MemStore, MemIndex> {
     let (store, index) = match existing {
-        Existing::Fixture => seeded(&fixture(), keys),
+        Existing::Fixture => seeded(&fixture()),
         Existing::Nothing | Existing::Broken => (MemStore::default(), MemIndex::default()),
     };
     *index.place().broken.lock().unwrap() = matches!(existing, Existing::Broken);
-    registry(store, index, &[keys], dir)
+    registry(store, index, dir)
 }
 
 #[rstest]
@@ -60,7 +55,6 @@ async fn publishing_updates_the_index(
     #[case] expected: Result<bool, &str>,
 ) {
     let (built, downloads) = (TempDir::new().unwrap(), TempDir::new().unwrap());
-    let keys = keypair();
     let files: Vec<(String, PathBuf)> = targets
         .iter()
         .map(|target| {
@@ -80,9 +74,9 @@ async fn publishing_updates_the_index(
         interface: 2,
         files: &files,
     };
-    let museum = registry_with(existing, &keys, downloads.path());
+    let museum = registry_with(existing, downloads.path());
 
-    let published = museum.publish(release, &keys.sk).await;
+    let published = museum.publish(release).await;
 
     assert_outcome(&published.as_ref().map(|p| p.changed), &expected);
     let want = VersionReq::parse(&format!("={version}")).unwrap();
@@ -99,15 +93,14 @@ async fn publishing_updates_the_index(
 #[case::initialised_registry_refused(Existing::Fixture, Err("AlreadyInitialised"))]
 #[case::init_index_failure_passed_through(Existing::Broken, Err("IndexStore(Broken)"))]
 #[tokio::test]
-async fn init_creates_an_empty_signed_index(
+async fn init_creates_an_empty_index(
     #[case] existing: Existing,
     #[case] expected: Result<usize, &str>,
 ) {
     let dir = TempDir::new().unwrap();
-    let keys = keypair();
-    let museum = registry_with(existing, &keys, dir.path());
+    let museum = registry_with(existing, dir.path());
 
-    let initialised = museum.init(&keys.sk).await;
+    let initialised = museum.init().await;
 
     let packages = match initialised {
         Ok(_) => museum.index().await.map(|index| index.packages().len()),

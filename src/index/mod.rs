@@ -32,14 +32,6 @@ pub struct Digest {
     pub size_bytes: u64,
 }
 
-/// An index file and its detached minisign signature, exactly as stored.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Signed {
-    pub index: Vec<u8>,
-    /// `None` when the index exists without a signature; `Registry` refuses it.
-    pub signature: Option<Vec<u8>>,
-}
-
 pub trait IndexError: std::error::Error + Send + Sync + 'static {
     /// No index exists yet: `init` may create one and the first `publish` starts empty.
     fn not_found(&self) -> bool;

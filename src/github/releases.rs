@@ -1,5 +1,5 @@
 //! A repository's releases. `GithubReleases` keeps executables as release assets: downloaded
-//! anonymously, or through the API with a token, which also uploads. `GithubReleaseFile` keeps an
+//! directly, or through the API when authorised, which also uploads. `GithubReleaseFile` keeps an
 //! index as one asset of one release.
 
 use std::collections::HashMap;
@@ -8,21 +8,15 @@ use std::sync::MutexGuard;
 use std::sync::PoisonError;
 
 use reqwest::RequestBuilder;
-use reqwest::header::ACCEPT;
-use reqwest::header::AUTHORIZATION;
 use reqwest::header::CONTENT_TYPE;
-use reqwest::header::HeaderMap;
-use reqwest::header::HeaderValue;
 use reqwest::header::LINK;
 
 use crate::github::GithubError;
 use crate::github::bytes;
 use crate::github::handle::Github;
 use crate::github::location;
-use crate::github::optional;
 use crate::github::send;
 use crate::github::stream;
-use crate::index::Signed;
 use crate::index::store::IndexStore;
 use crate::store::Artifact;
 use crate::store::ByteStream;
@@ -38,9 +32,9 @@ pub struct GithubReleases {
     github: Github,
 }
 
-/// With a token: every release's upload URL and every asset's API URL, listed once at bootstrap.
+/// When authorised: every release's upload URL and every asset's API URL, listed once at bootstrap.
 pub struct ReleasesSession {
-    token: Option<HeaderValue>,
+    authorised: bool,
     upload_urls: Mutex<HashMap<String, String>>,
     assets: Mutex<HashMap<Location, String>>,
 }
@@ -63,28 +57,24 @@ impl GithubReleases {
         Self { github }
     }
 
-    fn headers(token: &HeaderValue, accept: &'static str) -> HeaderMap {
-        HeaderMap::from_iter([
-            (AUTHORIZATION, token.clone()),
-            (ACCEPT, HeaderValue::from_static(accept)),
-        ])
-    }
-
     fn get(
         &self,
         session: &ReleasesSession,
         location: Location,
     ) -> Result<(String, RequestBuilder), GithubError> {
         let client = &self.github.client;
-        match &session.token {
-            None => {
+        match session.authorised {
+            false => {
                 let url = format!("{}/{location}", self.github.download_root());
-                Ok((url.clone(), client.get(url)))
+                Ok((
+                    url.clone(),
+                    client.get(url).headers(self.github.headers.clone()),
+                ))
             }
-            Some(token) => {
+            true => {
                 let url = lock(&session.assets).get(&location).cloned();
                 let url = url.ok_or(GithubError::MissingAsset { location })?;
-                let request = client.get(&url).headers(Self::headers(token, OCTETS));
+                let request = client.get(&url).headers(self.github.accepting(OCTETS));
                 Ok((url, request))
             }
         }
@@ -117,22 +107,21 @@ impl Store for GithubReleases {
     type Error = GithubError;
 
     async fn bootstrap(&self) -> Result<ReleasesSession, GithubError> {
-        let token = self.github.token()?;
         let session = ReleasesSession {
-            token,
+            authorised: self.github.authorised(),
             upload_urls: Mutex::default(),
             assets: Mutex::default(),
         };
-        let Some(token) = &session.token else {
+        if !session.authorised {
             return Ok(session);
-        };
+        }
         let mut next = Some(format!("{}?per_page=100", self.github.releases_url()));
         while let Some(url) = next {
             let response = send(
                 self.github
                     .client
                     .get(&url)
-                    .headers(Self::headers(token, JSON)),
+                    .headers(self.github.accepting(JSON)),
                 &url,
             )
             .await?;
@@ -176,13 +165,12 @@ impl StoreWriter for GithubReleases {
         location: &Location,
         bytes: Vec<u8>,
     ) -> Result<(), GithubError> {
-        let token = session
-            .token
-            .as_ref()
-            .ok_or_else(|| GithubError::ReadOnly {
+        if !session.authorised {
+            return Err(GithubError::ReadOnly {
                 place: self.github.download_root(),
-            })?;
-        let (client, json) = (&self.github.client, Self::headers(token, JSON));
+            });
+        }
+        let (client, json) = (&self.github.client, self.github.accepting(JSON));
         let existing = lock(&session.assets).remove(location);
         if let Some(url) = existing {
             send(client.delete(&url).headers(json.clone()), &url).await?;
@@ -222,24 +210,21 @@ impl StoreWriter for GithubReleases {
     }
 }
 
-/// An index kept as asset `name` of release `tag`, next to `<name>.minisig`.
+/// An index kept as asset `name` of release `tag`.
 #[derive(Clone, Debug)]
 pub struct GithubReleaseFile {
     releases: GithubReleases,
     index: Location,
-    signature: Location,
 }
 
 impl GithubReleaseFile {
     pub(crate) fn new(releases: GithubReleases, tag: &str, name: &str) -> Self {
-        let at = |file: String| Location {
-            group: tag.to_owned(),
-            file,
-        };
         Self {
             releases,
-            index: at(name.to_owned()),
-            signature: at(format!("{name}.minisig")),
+            index: Location {
+                group: tag.to_owned(),
+                file: name.to_owned(),
+            },
         }
     }
 }
@@ -247,33 +232,16 @@ impl GithubReleaseFile {
 impl IndexStore for GithubReleaseFile {
     type Error = GithubError;
 
-    async fn read(&self) -> Result<Signed, GithubError> {
+    async fn read(&self) -> Result<Vec<u8>, GithubError> {
         let session = self.releases.bootstrap().await?;
         let (url, request) = self.releases.get(&session, self.index.clone())?;
-        let index = bytes(request, &url).await?;
-        let signature = async {
-            let (url, request) = self.releases.get(&session, self.signature.clone())?;
-            bytes(request, &url).await
-        };
-        Ok(Signed {
-            index,
-            signature: optional(signature.await)?,
-        })
+        bytes(request, &url).await
     }
 
-    async fn write(&self, signed: Signed) -> Result<Vec<String>, GithubError> {
+    async fn write(&self, index: Vec<u8>) -> Result<String, GithubError> {
         let session = self.releases.bootstrap().await?;
-        self.releases
-            .upload(&session, &self.index, signed.index)
-            .await?;
-        self.releases
-            .upload(
-                &session,
-                &self.signature,
-                signed.signature.unwrap_or_default(),
-            )
-            .await?;
-        Ok(vec![self.index.to_string(), self.signature.to_string()])
+        self.releases.upload(&session, &self.index, index).await?;
+        Ok(self.index.to_string())
     }
 }
 

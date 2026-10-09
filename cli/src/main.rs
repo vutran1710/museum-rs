@@ -1,4 +1,4 @@
-//! `museum`: start a registry in a GitHub repository (`init`) and publish signed releases into it
+//! `museum`: start a registry in a GitHub repository (`init`) and publish releases into it
 //! (`publish`), driven by a `museum.toml` that `init` writes. The index lives in the `index`
 //! release or, with `index_branch`, is committed to the repository. The registry logic lives in
 //! `museum`.
@@ -17,7 +17,6 @@ use museum::IndexStore;
 use museum::Json;
 use museum::NewRelease;
 use museum::Options;
-use museum::PublicKey;
 use museum::Registry;
 use museum::ReleaseIndex;
 use museum::Toml;
@@ -29,8 +28,9 @@ use museum::github::GITHUB_RAW;
 use museum::github::Github;
 use museum::github::GithubConfig;
 use museum::github::reqwest;
-
-const PASSWORD_ENV: &str = "MUSEUM_KEY_PASSWORD";
+use museum::github::reqwest::header::AUTHORIZATION;
+use museum::github::reqwest::header::HeaderMap;
+use museum::github::reqwest::header::HeaderValue;
 
 #[derive(Parser)]
 #[command(name = "museum", version, about)]
@@ -43,9 +43,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Create a signing key, museum.toml and an empty signed index in the repository.
+    /// Create museum.toml and an empty index in the repository.
     Init(InitArgs),
-    /// Add a release: verify the index, upload the executables, then the re-signed index.
+    /// Add a release: upload the executables, then the updated index.
     Publish(PublishArgs),
 }
 
@@ -57,9 +57,6 @@ struct InitArgs {
     index: String,
     #[arg(long, default_value = "")]
     prefix: String,
-    /// Where to write the new secret key. Keep it out of the repository.
-    #[arg(long)]
-    secret_key: PathBuf,
     #[arg(long, default_value = GITHUB_API)]
     api_url: String,
     #[arg(long, default_value = "GITHUB_TOKEN")]
@@ -79,9 +76,6 @@ struct PublishArgs {
     interface: u32,
     #[arg(long = "file", value_parser = target_file, required = true)]
     files: Vec<(String, PathBuf)>,
-    /// The signing key `init` wrote. Its location is per machine, so it is not in museum.toml.
-    #[arg(long, env = "MUSEUM_SECRET_KEY")]
-    secret_key: PathBuf,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -89,7 +83,6 @@ struct Config {
     registry: GithubConfig,
     index: String,
     prefix: String,
-    public_keys: Vec<String>,
     api_url: String,
     token_env: String,
     index_branch: Option<String>,
@@ -117,7 +110,6 @@ async fn museum_cli(cli: Cli) -> Result<(), Box<dyn Error>> {
             registry: args.registry.clone(),
             index: args.index.clone(),
             prefix: args.prefix.clone(),
-            public_keys: Vec::new(),
             api_url: args.api_url.clone(),
             token_env: args.token_env.clone(),
             index_branch: args.index_branch.clone(),
@@ -133,7 +125,14 @@ async fn museum_cli(cli: Cli) -> Result<(), Box<dyn Error>> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(300))
         .build()?;
-    let gh = Github::private(&format!("{owner}/{repo}"), &config.token_env)?
+    let token = std::env::var(&config.token_env)
+        .map_err(|_| format!("set {} to a GitHub token", config.token_env))?;
+    let headers = HeaderMap::from_iter([(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {token}"))?,
+    )]);
+    let gh = Github::new(&format!("{owner}/{repo}"))?
+        .headers(headers)
         .prefix(&config.prefix)
         .client(client);
     let gh = gh.enterprise(GITHUB, &config.api_url, GITHUB_RAW);
@@ -184,59 +183,33 @@ async fn with_format<I: IndexStore>(
 async fn run<X: ReleaseIndex>(
     gh: &Github,
     index: X,
-    mut config: Config,
+    config: Config,
     cli: &Cli,
 ) -> Result<(), Box<dyn Error>> {
-    let trusted_keys = config
-        .public_keys
-        .iter()
-        .map(|key| PublicKey::from_base64(key))
-        .collect::<Result<_, _>>()?;
     let options = Options {
-        trusted_keys,
         download_dir: PathBuf::from("."),
     };
     let registry = Registry::github(gh, index, options)?;
-    let password = std::env::var(PASSWORD_ENV).ok();
     match &cli.command {
-        Command::Init(args) => {
-            let password = password.ok_or(format!("set {PASSWORD_ENV} to protect the new key"))?;
-            let keys = minisign::KeyPair::generate_encrypted_keypair(Some(password.clone()))?;
-            let stored = keys.sk.to_box(Some("museum signing key"))?;
-            let signing_key = minisign::SecretKey::from_box(stored.clone(), Some(password))?;
-            let mut key_file = create_new(&args.secret_key, 0o600)?;
-            let initialised: Result<_, Box<dyn Error>> = async {
-                let config_file = create_new(&cli.config, 0o644)?;
-                let uploads = registry.init(&signing_key).await.inspect_err(|_| {
-                    let _ = std::fs::remove_file(&cli.config);
-                })?;
-                Ok((uploads, config_file))
-            }
-            .await;
-            let (uploads, mut config_file) = initialised.inspect_err(|_| {
-                let _ = std::fs::remove_file(&args.secret_key);
+        Command::Init(_) => {
+            let mut config_file = create_new(&cli.config)?;
+            let uploads = registry.init().await.inspect_err(|_| {
+                let _ = std::fs::remove_file(&cli.config);
             })?;
-            key_file.write_all(stored.into_string().as_bytes())?;
-            config.public_keys.push(keys.pk.to_base64());
             config_file.write_all(toml::to_string_pretty(&config)?.as_bytes())?;
             uploads
                 .iter()
                 .for_each(|location| println!("uploaded {location}"));
-            println!(
-                "wrote {} and {}",
-                cli.config.display(),
-                args.secret_key.display()
-            );
+            println!("wrote {}", cli.config.display());
         }
         Command::Publish(args) => {
-            let secret_key = minisign::SecretKey::from_file(&args.secret_key, password)?;
             let release = NewRelease {
                 package: &args.package,
                 version: args.version.clone(),
                 interface: args.interface,
                 files: &args.files,
             };
-            let published = registry.publish(release, &secret_key).await?;
+            let published = registry.publish(release).await?;
             published
                 .uploads
                 .iter()
@@ -247,15 +220,12 @@ async fn run<X: ReleaseIndex>(
     Ok(())
 }
 
-/// Refuses to overwrite: a second `init` must never replace a key or config in use.
-fn create_new(path: &Path, mode: u32) -> std::io::Result<std::fs::File> {
-    std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))?;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, mode);
-    #[cfg(not(unix))]
-    let _ = mode;
+/// Refuses to overwrite: a second `init` must never replace a config in use.
+fn create_new(path: &Path) -> std::io::Result<std::fs::File> {
+    let options = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .clone();
     options
         .open(path)
         .map_err(|e| std::io::Error::new(e.kind(), format!("{}: {e}", path.display())))

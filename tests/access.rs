@@ -1,5 +1,5 @@
-//! What `Registry` guarantees around the store: the index signature, the bootstrapped session,
-//! and the work `fetch_all` shares between packages.
+//! What `Registry` guarantees around the store: the bootstrapped session, and the work `fetch_all`
+//! shares between packages.
 
 #![allow(clippy::unwrap_used)]
 
@@ -12,63 +12,11 @@ use common::LINUX;
 use common::WIN;
 use common::assert_outcome;
 use common::fixture;
-use common::keypair;
 use common::registry;
 use common::seeded;
 use museum::VersionReq;
 use rstest::rstest;
 use tempfile::TempDir;
-
-#[derive(Clone, Copy)]
-enum Signature {
-    By(usize),
-    Missing,
-    Garbage,
-}
-
-#[rstest]
-#[case::signed_index_reads(Signature::By(0), false, &[0], Ok(()))]
-#[case::missing_signature_refused(Signature::Missing, false, &[0], Err("BadSignature"))]
-#[case::signature_not_decodable_refused(Signature::Garbage, false, &[0], Err("BadSignature"))]
-#[case::tampered_index_refused(Signature::By(0), true, &[0], Err("BadSignature"))]
-#[case::untrusted_key_refused(Signature::By(1), false, &[0], Err("BadSignature"))]
-#[case::either_of_two_trusted_keys_accepted(Signature::By(1), false, &[0, 1], Ok(()))]
-#[tokio::test]
-async fn index_signature_is_enforced(
-    #[case] signature: Signature,
-    #[case] tampered: bool,
-    #[case] trusted: &[usize],
-    #[case] expected: Result<(), &str>,
-) {
-    let dir = TempDir::new().unwrap();
-    let keys = [keypair(), keypair()];
-    let signer = if let Signature::By(signer) = signature {
-        signer
-    } else {
-        0
-    };
-    let (store, index) = seeded(&fixture(), &keys[signer]);
-    {
-        let mut stored = index.place().signed.lock().unwrap();
-        let stored = stored.as_mut().unwrap();
-        match signature {
-            Signature::Missing => stored.signature = None,
-            Signature::Garbage => stored.signature = Some(b"not a signature".to_vec()),
-            Signature::By(_) => {}
-        }
-        if tampered {
-            stored
-                .index
-                .extend_from_slice(b"modbus 6.6.6 2 x86_64-unknown-linux-gnu 00 1\n");
-        }
-    }
-    let trusted: Vec<_> = trusted.iter().map(|i| &keys[*i]).collect();
-    let registry = registry(store, index, &trusted, dir.path());
-
-    let index = registry.index().await;
-
-    assert_outcome(&index.map(|_| ()), &expected);
-}
 
 fn wanted(written: &[(&str, &str)]) -> Vec<(String, VersionReq)> {
     written
@@ -90,11 +38,10 @@ async fn access_is_bootstrapped(
     #[case] sessions: &[usize],
 ) {
     let dir = TempDir::new().unwrap();
-    let keys = keypair();
-    let (store, index) = seeded(&fixture(), &keys);
+    let (store, index) = seeded(&fixture());
     let store = store.with_faults(faults);
     let log = store.log.clone();
-    let registry = registry(store, index, &[&keys], dir.path());
+    let registry = registry(store, index, dir.path());
 
     let fetched = registry
         .fetch_all(&wanted(&[("modbus", "^0.4"), ("opcua", "*")]), LINUX, 2)
@@ -122,10 +69,9 @@ async fn fetch_all_shares_work(
     #[case] downloads: usize,
 ) {
     let dir = TempDir::new().unwrap();
-    let keys = keypair();
-    let (store, index) = seeded(&fixture(), &keys);
+    let (store, index) = seeded(&fixture());
     let (log, place) = (store.log.clone(), index.store.0.clone());
-    let registry = registry(store, index, &[&keys], dir.path());
+    let registry = registry(store, index, dir.path());
 
     let fetched = registry.fetch_all(&wanted(written), target, 2).await;
 

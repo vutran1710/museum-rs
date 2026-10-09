@@ -3,11 +3,11 @@ name = "museum-cli"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Start a museum registry and publish signed executables into it"
+description = "Start a museum registry and publish executables into it"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/vutran1710/museum-rs"
 readme = "../README.md"
-keywords = ["registry", "plugins", "minisign", "publish", "cli"]
+keywords = ["registry", "plugins", "publish", "github-releases", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
@@ -18,15 +18,13 @@ path = "src/main.rs"
 # the registry itself, with the GitHub stores and every built-in index
 museum = { path = "..", version = "0.1.0", features = ["github", "json", "yaml", "toml"] }
 # argument parsing
-clap = { version = "4", features = ["derive", "env"] }
+clap = { version = "4", features = ["derive"] }
 # async runtime for the registry calls
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # museum.toml (de)serialisation
 serde = { version = "1", features = ["derive"] }
 # museum.toml format
 toml = "0.9"
-# generating and loading the publisher's signing key
-minisign = "0.7"
 
 [dev-dependencies]
 # parameterised test rows
