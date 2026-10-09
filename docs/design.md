@@ -125,7 +125,15 @@ to the repository.
 - `cargo +nightly fmt`, one `use` per item, no glob imports; clippy `-D warnings`; no `unwrap`/`expect`
   outside tests; `thiserror` for public errors.
 
-## 10. Open questions
+## 10. Releasing
+
+Set the same version in `Cargo.toml` and `cli/Cargo.toml`, commit, then push a matching tag
+(`git tag v0.2.0 && git push origin v0.2.0`). The publish workflow runs clippy and the tests on Linux
+and Windows, the nightly format check and the 100% line-coverage gate, refuses a tag that does not
+match both crate versions, then publishes `museum` and `museum-cli` with the `CARGO_REGISTRY_TOKEN`
+secret of the `CARGO_REGISTRY_TOKEN` environment.
+
+## 11. Open questions
 
 | # | Question | Today |
 |---|---|---|

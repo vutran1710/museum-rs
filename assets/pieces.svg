@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 300" role="img" aria-label="Registry is built from a Store for the executables and a ReleaseIndex for the index format; the ReleaseIndex holds the IndexStore that finds the index file. Each has built-in implementations and can be replaced by your own type.">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1c1f4a"/>
+    </marker>
+  </defs>
+  <rect width="920" height="300" rx="16" fill="#ffffff" stroke="#d7dbe8"/>
+  <g font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" fill="#1c1f4a">
+    <!-- registry -->
+    <rect x="30" y="110" width="190" height="80" rx="10" fill="#1c1f4a"/>
+    <text x="125" y="145" text-anchor="middle" font-size="16" font-weight="700" fill="#f2c45a">Registry&lt;S, X&gt;</text>
+    <text x="125" y="168" text-anchor="middle" font-size="12" fill="#e9ecff">resolve · fetch · publish</text>
+
+    <!-- store -->
+    <rect x="330" y="40" width="250" height="96" rx="10" fill="#eef0fb" stroke="#9aa1c7" stroke-width="2"/>
+    <text x="345" y="64" font-size="14" font-weight="700">S: Store</text>
+    <text x="345" y="84" font-size="12" fill="#3a3f63">where the executables live</text>
+    <text x="345" y="112" font-size="12" fill="#6b7190">built in</text>
+    <text x="400" y="112" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12">gh.releases()</text>
+
+    <!-- format -->
+    <rect x="330" y="164" width="250" height="96" rx="10" fill="#fff8e6" stroke="#f2c45a" stroke-width="2"/>
+    <text x="345" y="188" font-size="14" font-weight="700">X: ReleaseIndex</text>
+    <text x="345" y="208" font-size="12" fill="#3a3f63">what the index file looks like</text>
+    <text x="345" y="236" font-size="12" fill="#6b7190">built in</text>
+    <text x="400" y="236" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12">Json  Yaml  Toml</text>
+
+    <!-- index store -->
+    <rect x="650" y="164" width="240" height="96" rx="10" fill="#fff8e6" stroke="#f2c45a" stroke-width="2" stroke-dasharray="6 4"/>
+    <text x="665" y="188" font-size="14" font-weight="700">X::Store: IndexStore</text>
+    <text x="665" y="208" font-size="12" fill="#3a3f63">where that one file lives</text>
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5">
+      <text x="665" y="232">gh.release_file()  gh.file()</text>
+      <text x="665" y="250">HttpFile  LocalFile</text>
+    </g>
+
+    <!-- arrows -->
+    <path d="M220,135 C285,135 280,88 326,88" fill="none" stroke="#1c1f4a" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="250" y="96" text-anchor="middle" font-size="12">downloads from</text>
+    <path d="M220,165 C270,165 270,212 326,212" fill="none" stroke="#1c1f4a" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="262" y="226" text-anchor="middle" font-size="12">decodes with</text>
+    <line x1="580" y1="212" x2="646" y2="212" stroke="#1c1f4a" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="613" y="202" text-anchor="middle" font-size="12">holds</text>
+
+    <text x="460" y="286" text-anchor="middle" font-size="12" fill="#6b7190">Each piece is a trait. Use the built-ins, or implement your own for S3, a CDN, a folder, another file format.</text>
+  </g>
+</svg>
