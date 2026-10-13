@@ -58,7 +58,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [test, quality]
     runs-on: ubuntu-latest
-    environment: Publish to crates.io
+    environment: publising
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
